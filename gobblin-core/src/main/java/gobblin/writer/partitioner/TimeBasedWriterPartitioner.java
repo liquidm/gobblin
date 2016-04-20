@@ -53,7 +53,7 @@ public abstract class TimeBasedWriterPartitioner<D> implements WriterPartitioner
   public static final String WRITER_PARTITION_SUFFIX = ConfigurationKeys.WRITER_PREFIX + ".partition.suffix";
   public static final String WRITER_PARTITION_PATTERN = ConfigurationKeys.WRITER_PREFIX + ".partition.pattern";
   public static final String WRITER_PARTITION_TIMEZONE = ConfigurationKeys.WRITER_PREFIX + ".partition.timezone";
-  public static final String DEFAULT_WRITER_PARTITION_TIMEZONE = ConfigurationKeys.PST_TIMEZONE_NAME;
+  public static final String DEFAULT_WRITER_PARTITION_TIMEZONE = ConfigurationKeys.UTC_TIMEZONE_NAME;
   public static final String WRITER_PARTITION_GRANULARITY = ConfigurationKeys.WRITER_PREFIX + ".partition.granularity";
   public static final Granularity DEFAULT_WRITER_PARTITION_GRANULARITY = Granularity.HOUR;
 

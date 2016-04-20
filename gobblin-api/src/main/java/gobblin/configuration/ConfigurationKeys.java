@@ -36,6 +36,7 @@ public class ConfigurationKeys {
   // Comma-separated list of framework jars to include
   public static final String FRAMEWORK_JAR_FILES_KEY = "framework.jars";
 
+  public static final String UTC_TIMEZONE_NAME = "UTC";
   public static final String PST_TIMEZONE_NAME = "America/Los_Angeles";
 
   /**
