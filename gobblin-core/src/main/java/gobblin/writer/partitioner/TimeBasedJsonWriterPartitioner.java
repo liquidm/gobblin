@@ -12,9 +12,14 @@
 
 package gobblin.writer.partitioner;
 
+import com.google.gson.Gson;
+
 import gobblin.configuration.State;
 
+import java.nio.charset.StandardCharsets;
+
 public class TimeBasedJsonWriterPartitioner extends TimeBasedWriterPartitioner<byte[]> {
+  private static final Gson gson = new Gson();
 
   public TimeBasedJsonWriterPartitioner(State state) {
     this(state, 1, 0);
@@ -26,6 +31,12 @@ public class TimeBasedJsonWriterPartitioner extends TimeBasedWriterPartitioner<b
 
   @Override
   public long getRecordTimestamp(byte[] row) {
-    return System.currentTimeMillis();
+    try {
+      String payload = (row == null) ? "" : new String(row, StandardCharsets.UTF_8);
+      TimestampedObject event = gson.fromJson(payload, TimestampedObject.class);
+      return (long) event.timestamp * 1000;
+    } catch (Exception e) {
+      return 0;
+    }
   }
 }
