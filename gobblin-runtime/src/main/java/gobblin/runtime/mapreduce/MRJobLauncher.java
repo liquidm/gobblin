@@ -13,6 +13,7 @@
 package gobblin.runtime.mapreduce;
 
 import java.io.BufferedWriter;
+import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
@@ -60,9 +61,7 @@ import gobblin.metrics.Tag;
 import gobblin.metrics.event.TimingEvent;
 import gobblin.password.PasswordManager;
 import gobblin.runtime.AbstractJobLauncher;
-import gobblin.runtime.FileBasedJobLock;
 import gobblin.runtime.JobLauncher;
-import gobblin.runtime.JobLock;
 import gobblin.runtime.JobState;
 import gobblin.runtime.Task;
 import gobblin.runtime.TaskExecutor;
@@ -230,12 +229,6 @@ public class MRJobLauncher extends AbstractJobLauncher {
   }
 
   @Override
-  protected JobLock getJobLock() throws IOException {
-    return new FileBasedJobLock(this.fs, this.jobProps.getProperty(ConfigurationKeys.JOB_LOCK_DIR_KEY),
-        this.jobContext.getJobName());
-  }
-
-  @Override
   protected void executeCancellation() {
     try {
       if (this.hadoopJobSubmitted && !this.job.isComplete()) {
@@ -335,6 +328,9 @@ public class MRJobLauncher extends AbstractJobLauncher {
     short jobStateRF = (short)conf.getInt("dfs.replication.max", 20);
     SerializationUtils.serializeState(fs, jobStateFilePath, jobState, jobStateRF);
     job.getConfiguration().set(ConfigurationKeys.JOB_STATE_FILE_PATH_KEY, jobStateFilePath.toString());
+
+    DistributedCache.addCacheFile(jobStateFilePath.toUri(), job.getConfiguration());
+    job.getConfiguration().set(ConfigurationKeys.JOB_STATE_DISTRIBUTED_CACHE_NAME, jobStateFilePath.getName());
   }
 
   /**
@@ -509,14 +505,25 @@ public class MRJobLauncher extends AbstractJobLauncher {
 
     @Override
     protected void setup(Context context) {
-      try {
+      try(Closer closer = Closer.create()) {
         this.fs = FileSystem.get(context.getConfiguration());
         this.taskStateStore =
             new FsStateStore<>(this.fs, FileOutputFormat.getOutputPath(context).toUri().getPath(),
                 TaskState.class);
 
-        Path jobStateFilePath = new Path(context.getConfiguration().get(ConfigurationKeys.JOB_STATE_FILE_PATH_KEY));
-        SerializationUtils.deserializeState(this.fs, jobStateFilePath, this.jobState);
+        String jobStateFileName = context.getConfiguration().get(ConfigurationKeys.JOB_STATE_DISTRIBUTED_CACHE_NAME);
+        boolean foundStateFile = false;
+        for (Path dcPath : DistributedCache.getLocalCacheFiles(context.getConfiguration())) {
+          if (dcPath.getName().equals(jobStateFileName)) {
+            SerializationUtils.deserializeStateFromInputStream(closer.register(new FileInputStream(dcPath.toUri().getPath())),
+                this.jobState);
+            foundStateFile = true;
+            break;
+          }
+        }
+        if (!foundStateFile) {
+          throw new IOException("Job state file not found.");
+        }
       } catch (IOException ioe) {
         throw new RuntimeException("Failed to setup the mapper task", ioe);
       }
