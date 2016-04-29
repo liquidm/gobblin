@@ -1,48 +1,63 @@
-# Gobblin [![Build Status](https://secure.travis-ci.org/linkedin/gobblin.png)](https://travis-ci.org/linkedin/gobblin) [![Documentation Status](https://readthedocs.org/projects/gobblin/badge/?version=latest)](http://gobblin.readthedocs.org/en/latest/?badge=latest)
+# Gobblin fork to replace [Liquidm Camus](http://github.com/liquidm/camus)
 
-Gobblin is a universal data ingestion framework for extracting, transforming, and loading large volume of data from a variety of data sources, e.g., databases, rest APIs, FTP/SFTP servers, filers, etc., onto Hadoop. Gobblin handles the common routine tasks required for all data ingestion ETLs, including job/task scheduling, task partitioning, error handling, state management, data quality checking, data publishing, etc. Gobblin ingests data from different data sources in the same execution framework, and manages metadata of different sources all in one place. This, combined with other features such as auto scalability, fault tolerance, data quality assurance, extensibility, and the ability of handling data model evolution, makes Gobblin an easy-to-use, self-serving, and efficient data ingestion framework.
+Looks like Camus is not atomic in all cases and Camus is superseeded by Gobblin anyway.
 
-## Documentation
+## Changes
 
-Check out the Gobblin documentation at http://gobblin.readthedocs.org/en/latest/. Note the Gobblin Wiki documentation has been deprecated! For the most up to date version of the docs please reference the aforementioned link!
+This fork is optimized to read JSON from Kafka and write gzip'ed time-partitioned JSON into HDFS
 
-## Getting Started
+## Caveats
 
-### Building Gobblin
+Currently extracting the timestamp is hardcoded, you will need to adjust
 
-Download or clone the Gobblin repository (say, into `/path/to/gobblin`) and run the following command:
+   - [The name of the JSON key containing the timestamp](https://github.com/liquidm/gobblin/blob/master/gobblin-core/src/main/java/gobblin/writer/partitioner/TimestampedObject.java#L4)
+   - [The timestamp conversion to epoc](https://github.com/liquidm/gobblin/blob/master/gobblin-core/src/main/java/gobblin/writer/partitioner/TimeBasedJsonWriterPartitioner.java#L37)
 
-	$ cd /path/to/gobblin
-	$ ./gradlew clean build
+## Example config
+```
+mapreduce.job.queuename=your_queue # optional, ideal for hadoop node labels
+job.name=must_be_unique # we use kafkacluster_topic
+job.group=GobblinKafka
+job.description=Gobblin for kafkacluster_topic
+job.lock.enabled=true # avoid races on concurrent starts
+job.commit.policy=full # only commit data on total completion
 
-After Gobblin is successfully built, you will find a tarball named `gobblin-dist.tar.gz` under the project root directory. Copy the tarball out to somewhere and untar it, and you should see a directory named `gobblin-dist`, which initially contains three directories: `bin`, `conf`, and `lib`. Once Gobblin starts running, a new subdirectory `logs` will be created to store logs.
+kafka.brokers=kafka1.fqdn:port,kafka2.fqdn:port
+topic.whitelist=topic # we use one config per topic
 
-### Building against a Specific Hadoop Version
+bootstrap.with.offset=latest # or earliest
+reset.on.offset.out.of.range=nearest # or earliest / latest
 
-Gobblin uses the Hadoop core libraries to talk to HDFS as well as to run on Hadoop MapReduce. Because the protocols have changed in different versions of Hadoop, you must build Gobblin against the same version that your cluster runs. By default, Gobblin is built against version 1.2.1 of Hadoop 1, and against version 2.3.0 of Hadoop 2, but you can choose to build Gobblin against a different version of Hadoop.
+source.class=gobblin.source.extractor.extract.kafka.KafkaSimpleSource
+# if you want to limit the maximum time per run
+extract.limit.enabled=true
+extract.limit.time.limit.timeunit=minutes
+extract.limit.time.limit=50
+extract.limit.type=time
+extract.namespace=gobblin.extract.kafka
 
-The build command above will build Gobblin against the default version 1.2.1 of Hadoop 1. To build Gobblin against a different version of Hadoop 1, e.g., 1.2.0, run the following command:
+simple.writer.delimiter=\n #recommended, JSON does not contain new lines
+writer.builder.class=gobblin.writer.GZIPDataWriterBuilder
+writer.destination.type=HDFS
+writer.file.path.type=tablename
+writer.include.record.count.in.file.names=true
+writer.output.format=events.gz # this hack makes files compatible with camus, i.e. file.split('.')[3].to_i is event counter
+writer.partition.pattern=yyyy/MM/dd/HH
+writer.partition.timezone=UTC
+writer.partitioner.class=gobblin.writer.partitioner.TimeBasedJsonWriterPartitioner
 
-	$ ./gradlew clean build -PhadoopVersion=1.2.0
+data.publisher.type=gobblin.publisher.TimePartitionedDataPublisher # required
 
-To build Gobblin against the default version (2.3.0) of Hadoop 2, run the following command:
+mr.job.max.mappers=10
 
-	$ ./gradlew clean build -PuseHadoop2
+# where this are stored
+fs.uri=hdfs://liquidm/
+writer.fs.uri=hdfs://liquidm/
+state.store.fs.uri=hdfs://liquidm/
 
-To build Gobblin against a different version of Hadoop 2, e.g., 2.2.0, run the following command:
-
-	$ ./gradlew clean build -PuseHadoop2 -PhadoopVersion=2.2.0
-
-For more information on the different build options for Gobblin, check out the [Gobblin Build Options](http://gobblin.readthedocs.org/en/latest/user-guide/Gobblin-Build-Options/) wiki.
-
-### Running Gobblin
-
-Out of the box, Gobblin can run either in standalone mode on a single box or on Hadoop MapReduce. Please refer to the page [Gobblin Deployment](http://gobblin.readthedocs.org/en/latest/user-guide/Gobblin-Deployment/) in the documentation for an overview of the deployment modes and how to run Gobblin in different modes.
-
-### Running the Examples
-
-Please refer to the page [Getting Started](http://gobblin.readthedocs.org/en/latest/Getting-Started/) in the documentation on how to run the examples.
-
-## Configuration
-
-Please refer to the page [Configuration Glossary](http://gobblin.readthedocs.org/en/latest/user-guide/Configuration-Properties-Glossary/)in the documentation for an overview on the configuration properties of Gobblin.
+# avoid races between concurrent gobblins (paranoid mode)
+mr.job.root.dir=/gobblin/work/kafkacluster_topic
+state.store.dir=/gobblin/state-store/kafkacluster_topic
+task.data.root.dir=/gobblin/task/kafkacluster_topic
+data.publisher.final.dir=/history/kafkacluster
+```
