@@ -32,8 +32,10 @@ import gobblin.runtime.AbstractJobLauncher;
 import gobblin.runtime.JobState;
 import gobblin.runtime.TaskExecutor;
 import gobblin.runtime.TaskStateTracker;
-import gobblin.runtime.util.TimingEventNames;
+import gobblin.runtime.api.Configurable;
+import gobblin.runtime.api.JobSpec;
 import gobblin.source.workunit.WorkUnit;
+import gobblin.util.JobConfigurationUtils;
 import gobblin.util.JobLauncherUtils;
 
 
@@ -57,9 +59,9 @@ public class LocalJobLauncher extends AbstractJobLauncher {
   private volatile CountDownLatch countDownLatch;
 
   public LocalJobLauncher(Properties jobProps) throws Exception {
-    super(jobProps, ImmutableList.<Tag<?>>of());
+    super(jobProps, ImmutableList.<Tag<?>> of());
 
-    TimingEvent jobLocalSetupTimer = this.eventSubmitter.getTimingEvent(TimingEventNames.RunJobTimings.JOB_LOCAL_SETUP);
+    TimingEvent jobLocalSetupTimer = this.eventSubmitter.getTimingEvent(TimingEvent.RunJobTimings.JOB_LOCAL_SETUP);
 
     this.taskExecutor = new TaskExecutor(jobProps);
     this.taskStateTracker =
@@ -74,6 +76,11 @@ public class LocalJobLauncher extends AbstractJobLauncher {
     startCancellationExecutor();
 
     jobLocalSetupTimer.stop();
+  }
+
+  public LocalJobLauncher(Configurable instanceConf, JobSpec jobSpec) throws Exception {
+    this(JobConfigurationUtils.combineSysAndJobProperties(instanceConf.getConfigAsProperties(),
+                                                          jobSpec.getConfigAsProperties()));
   }
 
   @Override
@@ -91,7 +98,7 @@ public class LocalJobLauncher extends AbstractJobLauncher {
   @Override
   protected void runWorkUnits(List<WorkUnit> workUnits) throws Exception {
     TimingEvent workUnitsPreparationTimer =
-        this.eventSubmitter.getTimingEvent(TimingEventNames.RunJobTimings.WORK_UNITS_PREPARATION);
+        this.eventSubmitter.getTimingEvent(TimingEvent.RunJobTimings.WORK_UNITS_PREPARATION);
     List<WorkUnit> workUnitsToRun = JobLauncherUtils.flattenWorkUnits(workUnits);
     workUnitsPreparationTimer.stop();
 
@@ -107,11 +114,11 @@ public class LocalJobLauncher extends AbstractJobLauncher {
       workUnit.addAllIfNotExist(jobState);
     }
 
-    TimingEvent workUnitsRunTimer = this.eventSubmitter.getTimingEvent(TimingEventNames.RunJobTimings.WORK_UNITS_RUN);
+    TimingEvent workUnitsRunTimer = this.eventSubmitter.getTimingEvent(TimingEvent.RunJobTimings.WORK_UNITS_RUN);
 
     this.countDownLatch = new CountDownLatch(workUnitsToRun.size());
-    AbstractJobLauncher.runWorkUnits(this.jobContext.getJobId(), workUnitsToRun, this.taskStateTracker,
-        this.taskExecutor, this.countDownLatch);
+    AbstractJobLauncher.runWorkUnits(this.jobContext.getJobId(), this.jobContext.getJobState(), workUnitsToRun,
+        this.taskStateTracker, this.taskExecutor, this.countDownLatch);
 
     LOG.info(String.format("Waiting for submitted tasks of job %s to complete...", jobId));
     while (!this.countDownLatch.await(1, TimeUnit.MINUTES)) {

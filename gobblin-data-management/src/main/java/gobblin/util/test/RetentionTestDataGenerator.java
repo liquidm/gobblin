@@ -141,7 +141,11 @@ public class RetentionTestDataGenerator {
       }
       if (fileToCreate.hasPath(TEST_DATA_MOD_TIME_LOCAL_KEY)) {
         File file = new File(PathUtils.getPathWithoutSchemeAndAuthority(fullFilePath).toString());
-        file.setLastModified(FORMATTER.parseMillis(fileToCreate.getString(TEST_DATA_MOD_TIME_LOCAL_KEY)));
+        boolean modifiedFile =
+            file.setLastModified(FORMATTER.parseMillis(fileToCreate.getString(TEST_DATA_MOD_TIME_LOCAL_KEY)));
+        if (!modifiedFile) {
+          throw new IOException(String.format("Unable to set the last modified time for file %s!", file));
+        }
       }
     }
   }
@@ -173,6 +177,7 @@ public class RetentionTestDataGenerator {
   }
 
   public void cleanup() throws IOException {
+    DateTimeUtils.setCurrentMillisSystem();
     if (this.fs.exists(testTempDirPath)) {
       if (!this.fs.delete(testTempDirPath, true)) {
         throw new IOException("Failed to clean up path " + this.testTempDirPath);

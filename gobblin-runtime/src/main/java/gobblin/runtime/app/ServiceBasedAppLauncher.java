@@ -13,12 +13,15 @@
 package gobblin.runtime.app;
 
 import java.io.IOException;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
+import org.apache.commons.lang3.reflect.ConstructorUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -90,8 +93,7 @@ public class ServiceBasedAppLauncher implements ApplicationLauncher {
   private ServiceManager serviceManager;
 
   public ServiceBasedAppLauncher(Properties properties, String appName) throws Exception {
-    this.stopTime =
-        Integer.parseInt(properties.getProperty(APP_STOP_TIME_SECONDS, DEFAULT_APP_STOP_TIME_SECONDS));
+    this.stopTime = Integer.parseInt(properties.getProperty(APP_STOP_TIME_SECONDS, DEFAULT_APP_STOP_TIME_SECONDS));
     this.appId = ApplicationLauncherUtils.newAppId(appName);
     this.services = new ArrayList<>();
 
@@ -121,8 +123,23 @@ public class ServiceBasedAppLauncher implements ApplicationLauncher {
     this.hasStarted = true;
 
     this.serviceManager = new ServiceManager(this.services);
+    // A listener that shutdowns the application if any service fails.
+    this.serviceManager.addListener(new ServiceManager.Listener() {
+      @Override
+      public void failure(Service service) {
+        super.failure(service);
+        LOG.error(String.format("Service %s has failed.", service.getClass().getSimpleName()), service.failureCause());
+        try {
+          service.stopAsync();
+          ServiceBasedAppLauncher.this.stop();
+        } catch (ApplicationException ae) {
+          LOG.error("Could not shutdown services gracefully. This may cause the application to hang.");
+        }
+      }
+    });
 
     Runtime.getRuntime().addShutdownHook(new Thread() {
+      @Override
       public void run() {
         try {
           ServiceBasedAppLauncher.this.stop();
@@ -149,6 +166,10 @@ public class ServiceBasedAppLauncher implements ApplicationLauncher {
    */
   @Override
   public synchronized void stop() throws ApplicationException {
+    if (!this.hasStarted) {
+      LOG.warn("ApplicationLauncher was never started");
+      return;
+    }
     if (this.hasStopped) {
       LOG.warn("ApplicationLauncher has already stopped");
       return;
@@ -188,8 +209,8 @@ public class ServiceBasedAppLauncher implements ApplicationLauncher {
 
     boolean jobExecInfoServerEnabled = Boolean
         .valueOf(properties.getProperty(ConfigurationKeys.JOB_EXECINFO_SERVER_ENABLED_KEY, Boolean.FALSE.toString()));
-    boolean adminUiServerEnabled = Boolean
-        .valueOf(properties.getProperty(ConfigurationKeys.ADMIN_SERVER_ENABLED_KEY, Boolean.FALSE.toString()));
+    boolean adminUiServerEnabled =
+        Boolean.valueOf(properties.getProperty(ConfigurationKeys.ADMIN_SERVER_ENABLED_KEY, Boolean.FALSE.toString()));
 
     if (jobExecInfoServerEnabled) {
       LOG.info("Will launch the job execution info server");
@@ -200,7 +221,7 @@ public class ServiceBasedAppLauncher implements ApplicationLauncher {
         LOG.info("Will launch the admin UI server");
         addService(new AdminWebServer(properties, executionInfoServer.getAdvertisedServerUri()));
       }
-    }  else if (adminUiServerEnabled) {
+    } else if (adminUiServerEnabled) {
       LOG.warn("Not launching the admin UI because the job execution info server is not enabled");
     }
   }
@@ -216,16 +237,23 @@ public class ServiceBasedAppLauncher implements ApplicationLauncher {
   }
 
   private void addServicesFromProperties(Properties properties)
-      throws IllegalAccessException, InstantiationException, ClassNotFoundException {
-    if (properties.contains(APP_ADDITIONAL_SERVICES)) {
+      throws IllegalAccessException, InstantiationException, ClassNotFoundException, InvocationTargetException {
+    if (properties.containsKey(APP_ADDITIONAL_SERVICES)) {
       for (String serviceClassName : new State(properties).getPropAsSet(APP_ADDITIONAL_SERVICES)) {
         Class<?> serviceClass = Class.forName(serviceClassName);
         if (Service.class.isAssignableFrom(serviceClass)) {
-          addService((Service) serviceClass.newInstance());
+          Service service;
+          Constructor<?> constructor =
+              ConstructorUtils.getMatchingAccessibleConstructor(serviceClass, Properties.class);
+          if (constructor != null) {
+            service = (Service) constructor.newInstance(properties);
+          } else {
+            service = (Service) serviceClass.newInstance();
+          }
+          addService(service);
         } else {
-          throw new IllegalArgumentException(String
-              .format("Class %s specified by %s does not implement %s", serviceClassName, APP_ADDITIONAL_SERVICES,
-                  Service.class.getSimpleName()));
+          throw new IllegalArgumentException(String.format("Class %s specified by %s does not implement %s",
+              serviceClassName, APP_ADDITIONAL_SERVICES, Service.class.getSimpleName()));
         }
       }
     }
@@ -235,7 +263,8 @@ public class ServiceBasedAppLauncher implements ApplicationLauncher {
     final Thread mainThread = Thread.currentThread();
 
     Runtime.getRuntime().addShutdownHook(new Thread() {
-      @Override public void run() {
+      @Override
+      public void run() {
         mainThread.interrupt();
       }
     });

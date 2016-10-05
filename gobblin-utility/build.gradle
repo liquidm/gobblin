@@ -33,17 +33,15 @@ dependencies {
   compile externalDependency.bcprovJdk15on
   compile externalDependency.typesafeConfig
   compile externalDependency.commonsPool
+  compile externalDependency.hadoopClientCommon
+  compile externalDependency.avroMapredH2
+  compile externalDependency.commonsLang3
+  compile externalDependency.gson
 
-  if (useHadoop2) {
-    compile externalDependency.avroMapredH2
-    runtime externalDependency.hadoopCommon
-    runtime externalDependency.hadoopClientCore
-    runtime externalDependency.hadoopHdfs
-    runtime externalDependency.hadoopAuth
-  } else {
-    compile externalDependency.avroMapredH1
-    runtime externalDependency.hadoop
-  }
+  runtime externalDependency.hadoopCommon
+  runtime externalDependency.hadoopClientCore
+  runtime externalDependency.hadoopHdfs
+  runtime externalDependency.hadoopAuth
 
   testCompile externalDependency.hamcrest
   testCompile externalDependency.testng
@@ -60,6 +58,8 @@ configurations {
 test {
     workingDir rootProject.rootDir
 }
+
+
 
 ext.classification="library"
 

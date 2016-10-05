@@ -44,6 +44,7 @@ import gobblin.util.FinalState;
 import gobblin.util.ForkOperatorUtils;
 import gobblin.writer.DataWriter;
 import gobblin.writer.DataWriterBuilder;
+import gobblin.writer.DataWriterWrapperBuilder;
 import gobblin.writer.Destination;
 import gobblin.writer.PartitionedDataWriter;
 
@@ -371,7 +372,9 @@ public class Fork implements Closeable, Runnable, FinalState {
         .writeInFormat(this.taskContext.getWriterOutputFormat(this.branches, this.index)).withWriterId(this.taskId)
         .withSchema(this.convertedSchema.orNull()).withBranches(this.branches).forBranch(this.index);
 
-    return new PartitionedDataWriter<>(builder, this.taskContext.getTaskState());
+    DataWriter<Object> writer = new PartitionedDataWriter<>(builder, this.taskContext.getTaskState());
+    logger.info("Wrapping writer " + writer);
+    return new DataWriterWrapperBuilder<>(writer, this.taskState).build();
   }
 
   private void buildWriterIfNotPresent() throws IOException {
@@ -440,8 +443,7 @@ public class Fork implements Closeable, Runnable, FinalState {
       // Do task-level quality checking
       TaskLevelPolicyCheckResults taskResults = this.taskContext
           .getTaskLevelPolicyChecker(this.forkTaskState, this.branches > 1 ? this.index : -1).executePolicies();
-      TaskPublisher publisher =
-          this.taskContext.getTaskPublisher(this.forkTaskState, taskResults, this.branches > 1 ? this.index : -1);
+      TaskPublisher publisher = this.taskContext.getTaskPublisher(this.forkTaskState, taskResults);
       switch (publisher.canPublish()) {
         case SUCCESS:
           return true;

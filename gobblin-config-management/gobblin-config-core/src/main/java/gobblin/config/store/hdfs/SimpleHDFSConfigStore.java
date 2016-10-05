@@ -17,13 +17,11 @@ import java.io.InputStreamReader;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
-
-import lombok.AllArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang.StringUtils;
@@ -58,6 +56,9 @@ import gobblin.util.FileListUtils;
 import gobblin.util.PathUtils;
 import gobblin.util.io.SeekableFSInputStream;
 import gobblin.util.io.StreamUtils;
+
+import lombok.AllArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 
 /**
@@ -166,10 +167,11 @@ public class SimpleHDFSConfigStore implements ConfigStore, Deployable<FsDeployme
   @Override
   public String getCurrentVersion() {
     try {
-      return storeMetadata.getCurrentVersion();
+      return this.storeMetadata.getCurrentVersion();
     } catch (IOException e) {
       Path configStoreDir = new Path(new Path(this.physicalStoreRoot), CONFIG_STORE_NAME);
-      throw new RuntimeException(String.format("Error while checking current version for configStoreDir: \"%s\"", configStoreDir), e);
+      throw new RuntimeException(
+          String.format("Error while checking current version for configStoreDir: \"%s\"", configStoreDir), e);
     }
   }
 
@@ -211,7 +213,7 @@ public class SimpleHDFSConfigStore implements ConfigStore, Deployable<FsDeployme
       }
 
       for (FileStatus fileStatus : this.fs.listStatus(datasetDir)) {
-        if (fileStatus.isDir()) {
+        if (fileStatus.isDirectory()) {
           children.add(configKey.createChild(fileStatus.getPath().getName()));
         }
       }
@@ -251,10 +253,15 @@ public class SimpleHDFSConfigStore implements ConfigStore, Deployable<FsDeployme
       }
 
       FileStatus includesFileStatus = this.fs.getFileStatus(includesFile);
-      if (!includesFileStatus.isDir()) {
+      if (!includesFileStatus.isDirectory()) {
         try (InputStream includesConfInStream = this.fs.open(includesFileStatus.getPath())) {
-          configKeyPaths.addAll(Lists.newArrayList(Iterables.transform(
-              resolveIncludesList(IOUtils.readLines(includesConfInStream, Charsets.UTF_8)),
+          /*
+           * The includes returned are used to build a fallback chain.
+           * With the natural order, if a key found in the first include it is not be overriden by the next include.
+           * By reversing the list, the Typesafe fallbacks are constructed bottom up.
+           */
+          configKeyPaths.addAll(Lists.newArrayList(
+              Iterables.transform(Lists.reverse(resolveIncludesList(IOUtils.readLines(includesConfInStream, Charsets.UTF_8))),
                   new IncludesToConfigKey())));
         }
       }
@@ -276,12 +283,7 @@ public class SimpleHDFSConfigStore implements ConfigStore, Deployable<FsDeployme
   @VisibleForTesting
   public static List<String> resolveIncludesList(List<String> includes) {
 
-    if (includes.isEmpty()) {
-      return includes;
-    }
-
-    // Build a string representation of the config as parsing the includes as Map quotes the includes.
-    // Type safe resolves substitutions only for unquoted strings
+    // Create a TypeSafe Config object with Key INCLUDES_KEY_NAME and value an array of includes
     StringBuilder includesBuilder = new StringBuilder();
     for (String include : includes) {
       // Skip comments
@@ -290,15 +292,14 @@ public class SimpleHDFSConfigStore implements ConfigStore, Deployable<FsDeployme
       }
     }
 
+    // Resolve defaultOverrides and environment variables.
     if (includesBuilder.length() > 0) {
-      return ConfigFactory.parseString(includesBuilder.toString())
-              .withFallback(ConfigFactory.defaultOverrides())
-              .withFallback(ConfigFactory.systemEnvironment()).resolve().getStringList(INCLUDES_KEY_NAME);
+      return ConfigFactory.parseString(includesBuilder.toString()).withFallback(ConfigFactory.defaultOverrides())
+          .withFallback(ConfigFactory.systemEnvironment()).resolve().getStringList(INCLUDES_KEY_NAME);
     }
 
-    return includes;
+    return Collections.emptyList();
   }
-
 
   /**
    * Retrieves the {@link Config} for the given {@link ConfigKeyPath} by reading the {@link #MAIN_CONF_FILE_NAME}
@@ -313,8 +314,7 @@ public class SimpleHDFSConfigStore implements ConfigStore, Deployable<FsDeployme
    * @throws VersionDoesNotExistException if the version specified cannot be found in the {@link ConfigStore}.
    */
   @Override
-  public Config getOwnConfig(ConfigKeyPath configKey, String version)
-      throws VersionDoesNotExistException {
+  public Config getOwnConfig(ConfigKeyPath configKey, String version) throws VersionDoesNotExistException {
     Preconditions.checkNotNull(configKey, "configKey cannot be null!");
     Preconditions.checkArgument(!Strings.isNullOrEmpty(version), "version cannot be null or empty!");
 
@@ -327,13 +327,12 @@ public class SimpleHDFSConfigStore implements ConfigStore, Deployable<FsDeployme
       }
 
       FileStatus configFileStatus = this.fs.getFileStatus(mainConfFile);
-      if (!configFileStatus.isDir()) {
+      if (!configFileStatus.isDirectory()) {
         try (InputStream mainConfInputStream = this.fs.open(configFileStatus.getPath())) {
           return ConfigFactory.parseReader(new InputStreamReader(mainConfInputStream, Charsets.UTF_8));
         }
-      } else {
-        return ConfigFactory.empty();
       }
+      return ConfigFactory.empty();
     } catch (IOException e) {
       throw new RuntimeException(String.format("Error while getting config for configKey: \"%s\"", configKey), e);
     }
@@ -347,7 +346,7 @@ public class SimpleHDFSConfigStore implements ConfigStore, Deployable<FsDeployme
   private Path getDatasetDirForKey(ConfigKeyPath configKey, String version) throws VersionDoesNotExistException {
     String datasetFromConfigKey = getDatasetFromConfigKey(configKey);
 
-    if(StringUtils.isBlank(datasetFromConfigKey)){
+    if (StringUtils.isBlank(datasetFromConfigKey)) {
       return getVersionRoot(version);
     }
 
@@ -357,7 +356,7 @@ public class SimpleHDFSConfigStore implements ConfigStore, Deployable<FsDeployme
   /**
    * Retrieves the name of a dataset from a given {@link ConfigKeyPath}, relative to the store root.
    */
-  private String getDatasetFromConfigKey(ConfigKeyPath configKey) {
+  private static String getDatasetFromConfigKey(ConfigKeyPath configKey) {
     return StringUtils.removeStart(configKey.getAbsolutePathString(), SingleLinkedListConfigKeyPath.PATH_DELIMETER);
   }
 
@@ -386,13 +385,13 @@ public class SimpleHDFSConfigStore implements ConfigStore, Deployable<FsDeployme
 
     @Override
     public Path call() throws IOException {
-      Path versionRootPath = PathUtils.combinePaths(physicalStoreRoot.toString(), CONFIG_STORE_NAME, version);
-      if (fs.isDirectory(versionRootPath)) {
+      Path versionRootPath = PathUtils.combinePaths(SimpleHDFSConfigStore.this.physicalStoreRoot.toString(),
+          CONFIG_STORE_NAME, this.version);
+      if (SimpleHDFSConfigStore.this.fs.isDirectory(versionRootPath)) {
         return versionRootPath;
-      } else {
-        throw new VersionDoesNotExistException(getStoreURI(), version,
-            String.format("Cannot find specified version under root %s", versionRootPath));
       }
+      throw new VersionDoesNotExistException(getStoreURI(), this.version,
+          String.format("Cannot find specified version under root %s", versionRootPath));
     }
   }
 
@@ -468,15 +467,15 @@ public class SimpleHDFSConfigStore implements ConfigStore, Deployable<FsDeployme
 
     Path hdfsconfigStoreRoot = new Path(this.physicalStoreRoot.getPath(), CONFIG_STORE_NAME);
 
-    if (!fs.exists(hdfsconfigStoreRoot)) {
+    if (!this.fs.exists(hdfsconfigStoreRoot)) {
       throw new IOException("Config store root not present at " + this.physicalStoreRoot.getPath());
     }
 
     Path hdfsNewVersionPath = new Path(hdfsconfigStoreRoot, deploymentConfig.getNewVersion());
 
-    if (!fs.exists(hdfsNewVersionPath)) {
+    if (!this.fs.exists(hdfsNewVersionPath)) {
 
-      fs.mkdirs(hdfsNewVersionPath, deploymentConfig.getStorePermissions());
+      this.fs.mkdirs(hdfsNewVersionPath, deploymentConfig.getStorePermissions());
 
       Set<ConfigStream> confStreams = deploymentConfig.getDeployableConfigSource().getConfigStreams();
 
@@ -487,8 +486,8 @@ public class SimpleHDFSConfigStore implements ConfigStore, Deployable<FsDeployme
 
         Path hdsfConfPath = new Path(hdfsNewVersionPath, confAtPath);
 
-        if (!fs.exists(hdsfConfPath.getParent())) {
-          fs.mkdirs(hdsfConfPath.getParent());
+        if (!this.fs.exists(hdsfConfPath.getParent())) {
+          this.fs.mkdirs(hdsfConfPath.getParent());
         }
 
         // If an empty directory needs to created it may not have a stream.
@@ -502,18 +501,25 @@ public class SimpleHDFSConfigStore implements ConfigStore, Deployable<FsDeployme
       }
 
       // Set permission for newly copied files
-      for (FileStatus fileStatus : FileListUtils.listPathsRecursively(this.fs, hdfsNewVersionPath, FileListUtils.NO_OP_PATH_FILTER)) {
+      for (FileStatus fileStatus : FileListUtils.listPathsRecursively(this.fs, hdfsNewVersionPath,
+          FileListUtils.NO_OP_PATH_FILTER)) {
         this.fs.setPermission(fileStatus.getPath(), deploymentConfig.getStorePermissions());
       }
 
     } else {
       log.warn(String.format(
-              "STORE WITH VERSION %s ALREADY EXISTS. NEW RESOURCES WILL NOT BE COPIED. ONLY STORE MEATADATA FILE WILL BE UPDATED TO %s",
-              deploymentConfig.getNewVersion(), deploymentConfig.getNewVersion()));
+          "STORE WITH VERSION %s ALREADY EXISTS. NEW RESOURCES WILL NOT BE COPIED. ONLY STORE MEATADATA FILE WILL BE UPDATED TO %s",
+          deploymentConfig.getNewVersion(), deploymentConfig.getNewVersion()));
     }
 
-    storeMetadata.setCurrentVersion(deploymentConfig.getNewVersion());
+    this.storeMetadata.setCurrentVersion(deploymentConfig.getNewVersion());
 
-    log.info(String.format("New version %s of config store deployed at %s", deploymentConfig.getNewVersion(), hdfsconfigStoreRoot));
+    log.info(String.format("New version %s of config store deployed at %s", deploymentConfig.getNewVersion(),
+        hdfsconfigStoreRoot));
+  }
+
+  @VisibleForTesting
+  URI getPhysicalStoreRoot() {
+    return this.physicalStoreRoot;
   }
 }

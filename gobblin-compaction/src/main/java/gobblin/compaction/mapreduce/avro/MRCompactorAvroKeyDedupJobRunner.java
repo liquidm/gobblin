@@ -38,6 +38,7 @@ import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Enums;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
@@ -55,7 +56,7 @@ import gobblin.util.AvroUtils;
  * To dedup using entire records set compaction.use.all.attributes=true. Otherwise, a schema needs
  * to be provided by compaction.avro.key.schema.loc, based on which the dedup is performed.
  *
- * @author ziliu
+ * @author Ziyang Liu
  */
 public class MRCompactorAvroKeyDedupJobRunner extends MRCompactorJobRunner {
 
@@ -124,7 +125,8 @@ public class MRCompactorAvroKeyDedupJobRunner extends MRCompactorJobRunner {
    * If compaction.dedup.key=custom, it reads the schema from compaction.avro.key.schema.loc.
    * If the read fails, or if the custom key schema is incompatible with topicSchema, option "key" will be used.
    */
-  private Schema getKeySchema(Job job, Schema topicSchema) throws IOException {
+  @VisibleForTesting
+  Schema getKeySchema(Job job, Schema topicSchema) throws IOException {
     Schema keySchema = null;
     DedupKeyOption dedupKeyOption = getDedupKeyOption();
     if (dedupKeyOption == DedupKeyOption.ALL) {
@@ -234,12 +236,11 @@ public class MRCompactorAvroKeyDedupJobRunner extends MRCompactorJobRunner {
     return null;
   }
 
-  @SuppressWarnings("deprecation")
   private Schema getNewestSchemaFromSource(Path sourceDir) throws IOException {
     FileStatus[] files = this.fs.listStatus(sourceDir);
     Arrays.sort(files, new LastModifiedDescComparator());
     for (FileStatus status : files) {
-      if (status.isDir()) {
+      if (status.isDirectory()) {
         Schema schema = getNewestSchemaFromSource(status.getPath());
         if (schema != null)
           return schema;

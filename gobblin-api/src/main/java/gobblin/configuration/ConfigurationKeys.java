@@ -58,8 +58,11 @@ public class ConfigurationKeys {
   // Job configuration file monitor polling interval in milliseconds
   public static final String JOB_CONFIG_FILE_MONITOR_POLLING_INTERVAL_KEY = "jobconf.monitor.interval";
   public static final long DEFAULT_JOB_CONFIG_FILE_MONITOR_POLLING_INTERVAL = 300000;
-  // Directory where all job configuration files are stored
+  // Directory where all job configuration files are stored WHEN ALL confs reside in local FS.
   public static final String JOB_CONFIG_FILE_DIR_KEY = "jobconf.dir";
+
+  // Path where all job configuration files stored
+  public static final String JOB_CONFIG_FILE_GENERAL_PATH_KEY = "jobconf.fullyQualifiedPath" ;
   // Job configuration file extensions
   public static final String JOB_CONFIG_FILE_EXTENSIONS_KEY = "jobconf.extensions";
   public static final String DEFAULT_JOB_CONFIG_FILE_EXTENSIONS = "pull,job";
@@ -67,6 +70,7 @@ public class ConfigurationKeys {
   // Note this only applies to jobs scheduled by the built-in Quartz-based job scheduler.
   public static final String SCHEDULER_WAIT_FOR_JOB_COMPLETION_KEY = "scheduler.wait.for.job.completion";
   public static final String DEFAULT_SCHEDULER_WAIT_FOR_JOB_COMPLETION = Boolean.TRUE.toString();
+
 
   /**
    * Task executor and state tracker configuration properties.
@@ -98,6 +102,14 @@ public class ConfigurationKeys {
   public static final String DEFAULT_FORK_OPERATOR_CLASS = "gobblin.fork.IdentityForkOperator";
   public static final String JOB_COMMIT_POLICY_KEY = "job.commit.policy";
   public static final String DEFAULT_JOB_COMMIT_POLICY = "full";
+  // If true, commit of different datasets will be performed in parallel
+  // only turn on if publisher is thread-safe
+  public static final String PARALLELIZE_DATASET_COMMIT = "job.commit.parallelize";
+  public static final boolean DEFAULT_PARALLELIZE_DATASET_COMMIT = false;
+  /** Only applicable if {@link #PARALLELIZE_DATASET_COMMIT} is true. */
+  public static final String DATASET_COMMIT_THREADS = "job.commit.parallelCommits";
+  public static final int DEFAULT_DATASET_COMMIT_THREADS = 20;
+
   public static final String WORK_UNIT_RETRY_POLICY_KEY = "workunit.retry.policy";
   public static final String WORK_UNIT_RETRY_ENABLED_KEY = "workunit.retry.enabled";
   public static final String JOB_RUN_ONCE_KEY = "job.runonce";
@@ -105,6 +117,7 @@ public class ConfigurationKeys {
   public static final String JOB_JAR_FILES_KEY = "job.jars";
   public static final String JOB_LOCAL_FILES_KEY = "job.local.files";
   public static final String JOB_HDFS_FILES_KEY = "job.hdfs.files";
+  public static final String JOB_JAR_HDFS_FILES_KEY = "job.hdfs.jars";
   public static final String JOB_LOCK_ENABLED_KEY = "job.lock.enabled";
   public static final String JOB_MAX_FAILURES_KEY = "job.max.failures";
   public static final int DEFAULT_JOB_MAX_FAILURES = 1;
@@ -116,6 +129,15 @@ public class ConfigurationKeys {
   public static final boolean DEFAULT_OVERWRITE_CONFIGS_IN_STATESTORE = false;
   public static final String CLEANUP_STAGING_DATA_PER_TASK = "cleanup.staging.data.per.task";
   public static final boolean DEFAULT_CLEANUP_STAGING_DATA_PER_TASK = true;
+  public static final String CLEANUP_STAGING_DATA_BY_INITIALIZER = "cleanup.staging.data.by.initializer";
+
+  /** Optional, for user to specified which template to use, inside .job file */
+  public static final String JOB_TEMPLATE_PATH = "job.template" ;
+
+  /**
+   * Configuration property used only for job configuration file's tempalte, inside .template file
+   */
+  public static final String REQUIRED_ATRRIBUTES_LIST = "gobblin.template.required_attributes";
 
   /**
    * Configuration properties used internally.
@@ -190,6 +212,9 @@ public class ConfigurationKeys {
   public static final String CONVERTER_STRING_SPLITTER_DELIMITER = "converter.string.splitter.delimiter";
   public static final String CONVERTER_CSV_TO_JSON_ENCLOSEDCHAR = "converter.csv.to.json.enclosedchar";
   public static final String DEFAULT_CONVERTER_CSV_TO_JSON_ENCLOSEDCHAR = "\0";
+  public static final String CONVERTER_AVRO_FIELD_PICK_FIELDS = "converter.avro.fields";
+  public static final String CONVERTER_AVRO_JDBC_ENTRY_FIELDS_PAIRS = "converter.avro.jdbc.entry_fields_pairs";
+
 
   /**
    * Fork operator configuration properties.
@@ -213,6 +238,8 @@ public class ConfigurationKeys {
   public static final String WRITER_OUTPUT_FORMAT_KEY = WRITER_PREFIX + ".output.format";
   public static final String WRITER_FILE_SYSTEM_URI = WRITER_PREFIX + ".fs.uri";
   public static final String WRITER_STAGING_DIR = WRITER_PREFIX + ".staging.dir";
+  public static final String WRITER_STAGING_TABLE = WRITER_PREFIX + ".staging.table";
+  public static final String WRITER_TRUNCATE_STAGING_TABLE = WRITER_PREFIX + ".truncate.staging.table";
   public static final String WRITER_OUTPUT_DIR = WRITER_PREFIX + ".output.dir";
   public static final String WRITER_BUILDER_CLASS = WRITER_PREFIX + ".builder.class";
   public static final String DEFAULT_WRITER_BUILDER_CLASS = "gobblin.writer.AvroDataWriterBuilder";
@@ -281,6 +308,14 @@ public class ConfigurationKeys {
   public static final String DATA_PUBLISHER_PREFIX = "data.publisher";
 
   /**
+   * Metadata configuration properties used internally
+   */
+  public static final String DATA_PUBLISHER_METADATA_OUTPUT_DIR =  DATA_PUBLISHER_PREFIX + ".metadata.output.dir";
+  //Metadata String in the configuration file
+  public static final String DATA_PUBLISHER_METADATA_STR = DATA_PUBLISHER_PREFIX + ".metadata.string";
+  public static final String DATA_PUBLISHER_METADATA_OUTPUT_FILE = DATA_PUBLISHER_PREFIX + ".metadata.output_file";
+
+  /**
    * @deprecated Use {@link #TASK_DATA_PUBLISHER_TYPE} and {@link #JOB_DATA_PUBLISHER_TYPE}.
    */
   @Deprecated
@@ -304,6 +339,9 @@ public class ConfigurationKeys {
    * Configuration properties used by the extractor.
    */
   public static final String SOURCE_ENTITY = "source.entity";
+
+  // Comma-separated source entity names
+  public static final String SOURCE_ENTITIES = "source.entities";
   public static final String SOURCE_TIMEZONE = "source.timezone";
   public static final String SOURCE_SCHEMA = "source.schema";
   public static final String SOURCE_MAX_NUMBER_OF_PARTITIONS = "source.max.number.of.partitions";
@@ -435,17 +473,26 @@ public class ConfigurationKeys {
    * Common metrics configuration properties.
    */
   public static final String METRICS_CONFIGURATIONS_PREFIX = "metrics.";
-  public static final String METRICS_LOG_DIR_KEY = METRICS_CONFIGURATIONS_PREFIX + "log.dir";
   public static final String METRICS_ENABLED_KEY = METRICS_CONFIGURATIONS_PREFIX + "enabled";
   public static final String DEFAULT_METRICS_ENABLED = Boolean.toString(true);
-  public static final String METRICS_FILE_SUFFIX = METRICS_CONFIGURATIONS_PREFIX + "reporting.file.suffix";
-  public static final String DEFAULT_METRICS_FILE_SUFFIX = "";
+  public static final String METRICS_REPORT_INTERVAL_KEY = METRICS_CONFIGURATIONS_PREFIX + "report.interval";
+  public static final String DEFAULT_METRICS_REPORT_INTERVAL = Long.toString(TimeUnit.SECONDS.toMillis(30));
+  public static final String METRIC_CONTEXT_NAME_KEY = "metrics.context.name";
+
+  // File-based reporting
   public static final String METRICS_REPORTING_FILE_ENABLED_KEY =
       METRICS_CONFIGURATIONS_PREFIX + "reporting.file.enabled";
   public static final String DEFAULT_METRICS_REPORTING_FILE_ENABLED = Boolean.toString(false);
+  public static final String METRICS_LOG_DIR_KEY = METRICS_CONFIGURATIONS_PREFIX + "log.dir";
+  public static final String METRICS_FILE_SUFFIX = METRICS_CONFIGURATIONS_PREFIX + "reporting.file.suffix";
+  public static final String DEFAULT_METRICS_FILE_SUFFIX = "";
+
+  // JMX-based reporting
   public static final String METRICS_REPORTING_JMX_ENABLED_KEY =
       METRICS_CONFIGURATIONS_PREFIX + "reporting.jmx.enabled";
   public static final String DEFAULT_METRICS_REPORTING_JMX_ENABLED = Boolean.toString(false);
+
+  // Kafka-based reporting
   public static final String METRICS_REPORTING_KAFKA_ENABLED_KEY =
       METRICS_CONFIGURATIONS_PREFIX + "reporting.kafka.enabled";
   public static final String DEFAULT_METRICS_REPORTING_KAFKA_ENABLED = Boolean.toString(false);
@@ -464,9 +511,51 @@ public class ConfigurationKeys {
   // Topic used only for event reporting.
   public static final String METRICS_KAFKA_TOPIC_EVENTS =
       METRICS_CONFIGURATIONS_PREFIX + "reporting.kafka.topic.events";
+
+  //Graphite-based reporting
+  public static final String METRICS_REPORTING_GRAPHITE_METRICS_ENABLED_KEY =
+      METRICS_CONFIGURATIONS_PREFIX + "reporting.graphite.metrics.enabled";
+  public static final String DEFAULT_METRICS_REPORTING_GRAPHITE_METRICS_ENABLED = Boolean.toString(false);
+  public static final String METRICS_REPORTING_GRAPHITE_EVENTS_ENABLED_KEY =
+      METRICS_CONFIGURATIONS_PREFIX + "reporting.graphite.events.enabled";
+  public static final String DEFAULT_METRICS_REPORTING_GRAPHITE_EVENTS_ENABLED = Boolean.toString(false);
+  public static final String METRICS_REPORTING_GRAPHITE_HOSTNAME =
+      METRICS_CONFIGURATIONS_PREFIX + "reporting.graphite.hostname";
+  public static final String METRICS_REPORTING_GRAPHITE_PORT =
+      METRICS_CONFIGURATIONS_PREFIX + "reporting.graphite.port";
+  public static final String DEFAULT_METRICS_REPORTING_GRAPHITE_PORT = "2003";
+  public static final String METRICS_REPORTING_GRAPHITE_EVENTS_PORT =
+      METRICS_CONFIGURATIONS_PREFIX + "reporting.graphite.events.port";
+  public static final String METRICS_REPORTING_GRAPHITE_EVENTS_VALUE_AS_KEY =
+      METRICS_CONFIGURATIONS_PREFIX + "reporting.graphite.events.value.as.key";
+  public static final String DEFAULT_METRICS_REPORTING_GRAPHITE_EVENTS_VALUE_AS_KEY = Boolean.toString(false);
+  public static final String METRICS_REPORTING_GRAPHITE_SENDING_TYPE =
+      METRICS_CONFIGURATIONS_PREFIX + "reporting.graphite.sending.type";
+  public static final String DEFAULT_METRICS_REPORTING_GRAPHITE_SENDING_TYPE = "TCP";
+
+  //InfluxDB-based reporting
+  public static final String METRICS_REPORTING_INFLUXDB_METRICS_ENABLED_KEY =
+      METRICS_CONFIGURATIONS_PREFIX + "reporting.influxdb.metrics.enabled";
+  public static final String DEFAULT_METRICS_REPORTING_INFLUXDB_METRICS_ENABLED = Boolean.toString(false);
+  public static final String METRICS_REPORTING_INFLUXDB_EVENTS_ENABLED_KEY =
+      METRICS_CONFIGURATIONS_PREFIX + "reporting.influxdb.events.enabled";
+  public static final String DEFAULT_METRICS_REPORTING_INFLUXDB_EVENTS_ENABLED = Boolean.toString(false);
+  public static final String METRICS_REPORTING_INFLUXDB_URL =
+      METRICS_CONFIGURATIONS_PREFIX + "reporting.influxdb.url";
+  public static final String METRICS_REPORTING_INFLUXDB_DATABASE =
+      METRICS_CONFIGURATIONS_PREFIX + "reporting.influxdb.database";
+  public static final String METRICS_REPORTING_INFLUXDB_EVENTS_DATABASE =
+      METRICS_CONFIGURATIONS_PREFIX + "reporting.influxdb.events.database";
+  public static final String METRICS_REPORTING_INFLUXDB_USER =
+      METRICS_CONFIGURATIONS_PREFIX + "reporting.influxdb.user";
+  public static final String METRICS_REPORTING_INFLUXDB_PASSWORD =
+      METRICS_CONFIGURATIONS_PREFIX + "reporting.influxdb.password";
+  public static final String METRICS_REPORTING_INFLUXDB_SENDING_TYPE =
+      METRICS_CONFIGURATIONS_PREFIX + "reporting.influxdb.sending.type";
+  public static final String DEFAULT_METRICS_REPORTING_INFLUXDB_SENDING_TYPE = "TCP";
+
+  //Custom-reporting
   public static final String METRICS_CUSTOM_BUILDERS = METRICS_CONFIGURATIONS_PREFIX + "reporting.custom.builders";
-  public static final String METRICS_REPORT_INTERVAL_KEY = METRICS_CONFIGURATIONS_PREFIX + "report.interval";
-  public static final String DEFAULT_METRICS_REPORT_INTERVAL = Long.toString(TimeUnit.SECONDS.toMillis(30));
 
   /**
    * Rest server configuration properties.
@@ -535,6 +624,11 @@ public class ConfigurationKeys {
    * Hive registration properties
    */
   public static final String HIVE_REGISTRATION_POLICY = "hive.registration.policy";
+
+  /**
+   * Config store properties
+   */
+  public static final String CONFIG_MANAGEMENT_STORE_URI = "gobblin.config.management.store.uri";
 
   /**
    * Other configuration properties.

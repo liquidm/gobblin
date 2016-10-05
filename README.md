@@ -61,3 +61,12 @@ state.store.dir=/gobblin/state-store/kafkacluster_topic
 task.data.root.dir=/gobblin/task/kafkacluster_topic
 data.publisher.final.dir=/history/kafkacluster
 ```
+=======
+# Quick Links
+
+  * Documentation: Check out the [Gobblin documentation](http://gobblin.readthedocs.org/en/latest/) for a complete description of Gobblin's features
+  * Powered By: Check out the [list of companies](http://gobblin.readthedocs.io/en/latest/Powered-By/) known to use Gobblin
+  * Architecture: The [Gobblin Architecture](http://gobblin.readthedocs.io/en/latest/Gobblin-Architecture/) page has a full explanation of Gobblin's architecture
+  * Getting Started with Gobblin: Refer to the [Getting Started Guide](http://gobblin.readthedocs.org/en/latest/Getting-Started/) on how to get started with Gobblin
+  * Building Gobblin: Refer to the page [Building Gobblin](http://gobblin.readthedocs.io/en/latest/user-guide/Building-Gobblin/) for directions on how to build Gobblin
+  * Javadocs: The full JavaDocs for each released version of Gobblin can be found [here](http://linkedin.github.io/gobblin/javadoc/latest/)
