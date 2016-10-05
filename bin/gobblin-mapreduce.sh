@@ -142,8 +142,8 @@ LIBJARS=(
   $FWDIR_LIB/data-1.15.9.jar
   $FWDIR_LIB/gson-2.6.2.jar
   $FWDIR_LIB/joda-time-2.9.3.jar
-  $FWDIR_LIB/kafka_2.11-0.8.2.2.jar
-  $FWDIR_LIB/kafka-clients-0.8.2.2.jar
+  $FWDIR_LIB/kafka_2.11-0.10.0.1.jar
+  $FWDIR_LIB/kafka-clients-0.10.0.1.jar
   $FWDIR_LIB/metrics-core-2.2.0.jar
   $FWDIR_LIB/metrics-core-3.1.0.jar
   $FWDIR_LIB/metrics-graphite-3.1.0.jar
