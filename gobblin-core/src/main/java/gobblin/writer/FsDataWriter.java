@@ -16,6 +16,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
@@ -26,6 +27,7 @@ import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
 import com.google.common.io.Closer;
 
+import gobblin.commit.SpeculativeAttemptAwareConstruct;
 import gobblin.configuration.ConfigurationKeys;
 import gobblin.configuration.State;
 import gobblin.util.FinalState;
@@ -42,7 +44,7 @@ import gobblin.util.recordcount.IngestionRecordCountProvider;
  *
  * @author akshay@nerdwallet.com
  */
-public abstract class FsDataWriter<D> implements DataWriter<D>, FinalState {
+public abstract class FsDataWriter<D> implements DataWriter<D>, FinalState, SpeculativeAttemptAwareConstruct {
 
   private static final Logger LOG = LoggerFactory.getLogger(FsDataWriter.class);
 
@@ -66,23 +68,29 @@ public abstract class FsDataWriter<D> implements DataWriter<D>, FinalState {
   protected final FsPermission dirPermission;
   protected final Optional<String> group;
   protected final Closer closer = Closer.create();
+  protected final Optional<String> writerAttemptIdOptional;
+  protected Optional<Long> bytesWritten;
 
-  public FsDataWriter(FsDataWriterBuilder<?, D> builder, State properties) throws IOException {
+  public FsDataWriter(FsDataWriterBuilder<?, D> builder, State properties)
+      throws IOException {
     this.properties = properties;
     this.id = builder.getWriterId();
     this.numBranches = builder.getBranches();
     this.branchId = builder.getBranch();
     this.fileName = builder.getFileName(properties);
+    this.writerAttemptIdOptional = Optional.fromNullable(builder.getWriterAttemptId());
 
     Configuration conf = new Configuration();
     // Add all job configuration properties so they are picked up by Hadoop
     JobConfigurationUtils.putStateIntoConfiguration(properties, conf);
-
     this.fs = WriterUtils.getWriterFS(properties, this.numBranches, this.branchId);
 
     // Initialize staging/output directory
-    this.stagingFile =
-        new Path(WriterUtils.getWriterStagingDir(properties, this.numBranches, this.branchId), this.fileName);
+    Path writerStagingDir = this.writerAttemptIdOptional.isPresent() ? WriterUtils
+        .getWriterStagingDir(properties, this.numBranches, this.branchId, this.writerAttemptIdOptional.get())
+        : WriterUtils.getWriterStagingDir(properties, this.numBranches, this.branchId);
+    this.stagingFile = new Path(writerStagingDir, this.fileName);
+
     this.outputFile =
         new Path(WriterUtils.getWriterOutputDir(properties, this.numBranches, this.branchId), this.fileName);
     this.allOutputFilesPropName = ForkOperatorUtils
@@ -99,17 +107,17 @@ public abstract class FsDataWriter<D> implements DataWriter<D>, FinalState {
     this.shouldIncludeRecordCountInFileName = properties.getPropAsBoolean(ForkOperatorUtils
         .getPropertyNameForBranch(WRITER_INCLUDE_RECORD_COUNT_IN_FILE_NAMES, this.numBranches, this.branchId), false);
 
-    this.bufferSize =
-        properties.getPropAsInt(ForkOperatorUtils.getPropertyNameForBranch(ConfigurationKeys.WRITER_BUFFER_SIZE,
-            this.numBranches, this.branchId), ConfigurationKeys.DEFAULT_BUFFER_SIZE);
+    this.bufferSize = properties.getPropAsInt(ForkOperatorUtils
+            .getPropertyNameForBranch(ConfigurationKeys.WRITER_BUFFER_SIZE, this.numBranches, this.branchId),
+        ConfigurationKeys.DEFAULT_BUFFER_SIZE);
 
     this.replicationFactor = properties.getPropAsShort(ForkOperatorUtils
         .getPropertyNameForBranch(ConfigurationKeys.WRITER_FILE_REPLICATION_FACTOR, this.numBranches, this.branchId),
         this.fs.getDefaultReplication(this.outputFile));
 
-    this.blockSize =
-        properties.getPropAsLong(ForkOperatorUtils.getPropertyNameForBranch(ConfigurationKeys.WRITER_FILE_BLOCK_SIZE,
-            this.numBranches, this.branchId), this.fs.getDefaultBlockSize(this.outputFile));
+    this.blockSize = properties.getPropAsLong(ForkOperatorUtils
+            .getPropertyNameForBranch(ConfigurationKeys.WRITER_FILE_BLOCK_SIZE, this.numBranches, this.branchId),
+        this.fs.getDefaultBlockSize(this.outputFile));
 
     this.filePermission = HadoopUtils.deserializeWriterFilePermissions(properties, this.numBranches, this.branchId);
 
@@ -120,6 +128,7 @@ public abstract class FsDataWriter<D> implements DataWriter<D>, FinalState {
 
     // Create the parent directory of the output file if it does not exist
     WriterUtils.mkdirsWithRecursivePermission(this.fs, this.outputFile.getParent(), this.dirPermission);
+    this.bytesWritten = Optional.absent();
   }
 
   /**
@@ -128,9 +137,11 @@ public abstract class FsDataWriter<D> implements DataWriter<D>, FinalState {
    * @return an {@link OutputStream} to write to the staging file
    * @throws IOException if it fails to create the file and the {@link OutputStream}
    */
-  protected OutputStream createStagingFileOutputStream() throws IOException {
-    return this.closer.register(this.fs.create(this.stagingFile, this.filePermission, true, this.bufferSize,
-        this.replicationFactor, this.blockSize, null));
+  protected OutputStream createStagingFileOutputStream()
+      throws IOException {
+    return this.closer.register(this.fs
+        .create(this.stagingFile, this.filePermission, true, this.bufferSize, this.replicationFactor, this.blockSize,
+            null));
   }
 
   /**
@@ -138,12 +149,22 @@ public abstract class FsDataWriter<D> implements DataWriter<D>, FinalState {
    *
    * @throws IOException if it fails to set the group name
    */
-  protected void setStagingFileGroup() throws IOException {
+  protected void setStagingFileGroup()
+      throws IOException {
     Preconditions.checkArgument(this.fs.exists(this.stagingFile),
         String.format("Staging output file %s does not exist", this.stagingFile));
     if (this.group.isPresent()) {
       HadoopUtils.setGroup(this.fs, this.stagingFile, this.group.get());
     }
+  }
+
+  @Override
+  public long bytesWritten()
+      throws IOException {
+    if (this.bytesWritten.isPresent()) {
+      return this.bytesWritten.get().longValue();
+    }
+    return 0l;
   }
 
   /**
@@ -157,17 +178,22 @@ public abstract class FsDataWriter<D> implements DataWriter<D>, FinalState {
    * @throws IOException if any file operation fails
    */
   @Override
-  public void commit() throws IOException {
+  public void commit()
+      throws IOException {
     this.closer.close();
 
     if (!this.fs.exists(this.stagingFile)) {
       throw new IOException(String.format("File %s does not exist", this.stagingFile));
     }
 
+    FileStatus stagingFileStatus = this.fs.getFileStatus(this.stagingFile);
+
     // Double check permission of staging file
-    if (!this.fs.getFileStatus(this.stagingFile).getPermission().equals(this.filePermission)) {
+    if (!stagingFileStatus.getPermission().equals(this.filePermission)) {
       this.fs.setPermission(this.stagingFile, this.filePermission);
     }
+
+    this.bytesWritten = Optional.of(Long.valueOf(stagingFileStatus.getLen()));
 
     LOG.info(String.format("Moving data from %s to %s", this.stagingFile, this.outputFile));
     // For the same reason as deleting the staging file if it already exists, deleting
@@ -190,7 +216,8 @@ public abstract class FsDataWriter<D> implements DataWriter<D>, FinalState {
    * @throws IOException if deletion of the staging file fails
    */
   @Override
-  public void cleanup() throws IOException {
+  public void cleanup()
+      throws IOException {
     // Delete the staging file
     if (this.fs.exists(this.stagingFile)) {
       HadoopUtils.deletePath(this.fs, this.stagingFile, false);
@@ -198,7 +225,8 @@ public abstract class FsDataWriter<D> implements DataWriter<D>, FinalState {
   }
 
   @Override
-  public void close() throws IOException {
+  public void close()
+      throws IOException {
     this.closer.close();
 
     if (this.shouldIncludeRecordCountInFileName) {
@@ -209,7 +237,8 @@ public abstract class FsDataWriter<D> implements DataWriter<D>, FinalState {
     }
   }
 
-  private synchronized String addRecordCountToFileName() throws IOException {
+  private synchronized String addRecordCountToFileName()
+      throws IOException {
     String filePath = getOutputFilePath();
     String filePathWithRecordCount = IngestionRecordCountProvider.constructFilePath(filePath, recordsWritten());
     LOG.info("Renaming " + filePath + " to " + filePathWithRecordCount);
@@ -249,5 +278,10 @@ public abstract class FsDataWriter<D> implements DataWriter<D>, FinalState {
    */
   public String getFullyQualifiedOutputFilePath() {
     return this.fs.makeQualified(this.outputFile).toString();
+  }
+
+  @Override
+  public boolean isSpeculativeAttemptSafe() {
+    return this.writerAttemptIdOptional.isPresent() && this.getClass() == FsDataWriter.class;
   }
 }

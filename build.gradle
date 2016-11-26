@@ -121,22 +121,28 @@ if (!project.hasProperty('version') || project.version == 'unspecified') {
 println "name=" + project.name + " group=" + project.group
 println "project.version=" + project.version
 
+def gradleVersionDotIdx = project.gradle.gradleVersion.indexOf(".")
+ext.gradleVersionMajor = Integer.parseInt(project.gradle.gradleVersion.substring(0, gradleVersionDotIdx))
+ext.gradleVersionMinor = Integer.parseInt(project.gradle.gradleVersion.substring(gradleVersionDotIdx + 1))
+println "Detected Gradle version major=" + gradleVersionMajor + "minor=" + gradleVersionMinor
+
 if (!project.hasProperty('hiveVersion')) {
   ext.hiveVersion = '1.0.1'
 }
 
 if (!project.hasProperty('pegasusVersion')) {
-  ext.pegasusVersion = '1.15.9'
+  ext.pegasusVersion = '2.6.0'
 }
 
 if (!project.hasProperty('bytemanVersion')) {
   ext.bytemanVersion = '2.2.1'
 }
 
-ext.avroVersion = '1.7.7'
+ext.avroVersion = '1.8.1'
 ext.dropwizardMetricsVersion = '3.1.0'
 ext.findBugsVersion = '3.0.0'
 ext.confluentVersion = '2.0.1'
+ext.googleVersion = '1.22.0'
 
 dependencyManagement {
   imports {
@@ -147,7 +153,7 @@ dependencyManagement {
 ext.externalDependency = [
   "antlrRuntime": "org.antlr:antlr-runtime:3.5.2",
   "avro": "org.apache.avro:avro:" + avroVersion,
-  "avroMapredH2": "org.apache.avro:avro-mapred:" + avroVersion + ":hadoop2",
+  "avroMapredH2": "org.apache.avro:avro-mapred:" + avroVersion,
   "awsCore": "com.amazonaws:aws-java-sdk-core:1.11.8",
   "awsAsg": "com.amazonaws:aws-java-sdk-autoscaling:1.11.8",
   "awsAppAsg": "com.amazonaws:aws-java-sdk-applicationautoscaling:1.11.8",
@@ -268,7 +274,14 @@ ext.externalDependency = [
   "embeddedProcess": "de.flapdoodle.embed:de.flapdoodle.embed.process:1.50.2",
   "testMysqlServer": "com.wix:wix-embedded-mysql:2.0.1",
   "flyway": "org.flywaydb:flyway-core:3.2.1",
-  "oltu": "org.apache.oltu.oauth2:org.apache.oltu.oauth2.client:1.0.2"
+  "oltu": "org.apache.oltu.oauth2:org.apache.oltu.oauth2.client:1.0.2",
+  "googleAnalytics": "com.google.apis:google-api-services-analytics:v3-rev134-1.22.0",
+  "googleDrive": "com.google.apis:google-api-services-drive:v3-rev42-1.22.0",
+  "googleHttpClient": "com.google.http-client:google-http-client:" + googleVersion,
+  "googleHttpClientGson": "com.google.http-client:google-http-client-gson:" + googleVersion,
+  "googleOauthClient": "com.google.oauth-client:google-oauth-client:" + googleVersion,
+  "googleApiClient": "com.google.api-client:google-api-client:" + googleVersion,
+  "opencsv": "com.opencsv:opencsv:3.8"
 ];
 
 if (!isDefaultEnvironment)
@@ -281,7 +294,7 @@ if (!isDefaultEnvironment)
   }
 }
 
-task wrapper(type: Wrapper) { gradleVersion = '1.12' }
+task wrapper(type: Wrapper) { gradleVersion = '2.13' }
 
 import javax.tools.ToolProvider
 

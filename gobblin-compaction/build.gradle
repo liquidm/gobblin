@@ -16,6 +16,7 @@ dependencies {
   compile project(":gobblin-utility")
   compile project(":gobblin-metrics")
   compile project(":gobblin-core")
+  compile project(":gobblin-data-management")
 
   compile externalDependency.calciteCore
   compile externalDependency.calciteAvatica
@@ -24,6 +25,8 @@ dependencies {
   compile externalDependency.commonsLang
   compile externalDependency.commonsMath
   compile externalDependency.hiveExec
+  compile externalDependency.mockito
+  compile externalDependency.testng
 
   runtime externalDependency.hadoopCommon
   runtime externalDependency.hadoopClientCore
@@ -45,8 +48,8 @@ dependencies {
 }
 
 
-configurations { 
-    compile { transitive = true } 
+configurations {
+    compile { transitive = true }
 }
 
 ext.classification="library"

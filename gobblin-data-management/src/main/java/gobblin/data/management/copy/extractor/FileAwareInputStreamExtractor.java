@@ -12,14 +12,17 @@
 
 package gobblin.data.management.copy.extractor;
 
+import gobblin.configuration.WorkUnitState;
 import gobblin.data.management.copy.CopyableFile;
 import gobblin.data.management.copy.FileAwareInputStream;
 import gobblin.source.extractor.DataRecordException;
 import gobblin.source.extractor.Extractor;
+import gobblin.util.HadoopUtils;
 
 import java.io.IOException;
 import java.io.InputStream;
 
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 
 
@@ -37,14 +40,19 @@ public class FileAwareInputStreamExtractor implements Extractor<String, FileAwar
 
   private final FileSystem fs;
   private final CopyableFile file;
+  private final WorkUnitState state;
   /** True indicates the unique record has already been read. */
   private boolean recordRead;
 
-  public FileAwareInputStreamExtractor(FileSystem fs, CopyableFile file) {
-
+  public FileAwareInputStreamExtractor(FileSystem fs, CopyableFile file, WorkUnitState state) {
     this.fs = fs;
     this.file = file;
+    this.state = state;
     this.recordRead = false;
+  }
+
+  public FileAwareInputStreamExtractor(FileSystem fs, CopyableFile file) {
+    this(fs, file, null);
   }
 
   /**
@@ -52,7 +60,8 @@ public class FileAwareInputStreamExtractor implements Extractor<String, FileAwar
    * @throws IOException
    */
   @Override
-  public String getSchema() throws IOException {
+  public String getSchema()
+      throws IOException {
     return FileAwareInputStream.class.getName();
   }
 
@@ -61,11 +70,13 @@ public class FileAwareInputStreamExtractor implements Extractor<String, FileAwar
       throws DataRecordException, IOException {
 
     if (!this.recordRead) {
+      Configuration conf =
+          this.state == null ? HadoopUtils.newConfiguration() : HadoopUtils.getConfFromState(this.state);
+      FileSystem fsFromFile = this.file.getOrigin().getPath().getFileSystem(conf);
       this.recordRead = true;
-      return new FileAwareInputStream(this.file, this.fs.open(this.file.getFileStatus().getPath()));
+      return new FileAwareInputStream(this.file, fsFromFile.open(this.file.getFileStatus().getPath()));
     }
     return null;
-
   }
 
   @Override
@@ -79,5 +90,7 @@ public class FileAwareInputStreamExtractor implements Extractor<String, FileAwar
   }
 
   @Override
-  public void close() throws IOException {}
+  public void close()
+      throws IOException {
+  }
 }

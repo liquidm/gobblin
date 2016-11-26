@@ -88,15 +88,6 @@ public class AvroHdfsDataWriter extends FsDataWriter<GenericRecord> {
     return this.count.get();
   }
 
-  @Override
-  public synchronized long bytesWritten() throws IOException {
-    if (!this.fs.exists(this.outputFile)) {
-      return 0;
-    }
-
-    return this.fs.getFileStatus(this.outputFile).getLen();
-  }
-
   /**
    * Create a new {@link DataFileWriter} for writing Avro records.
    *
@@ -110,5 +101,10 @@ public class AvroHdfsDataWriter extends FsDataWriter<GenericRecord> {
 
     // Open the file and return the DataFileWriter
     return writer.create(this.schema, this.stagingFileOutputStream);
+  }
+
+  @Override
+  public boolean isSpeculativeAttemptSafe() {
+    return this.writerAttemptIdOptional.isPresent() && this.getClass() == AvroHdfsDataWriter.class;
   }
 }

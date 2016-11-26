@@ -38,10 +38,10 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocalFileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapreduce.Job;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.base.Functions;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Stopwatch;
@@ -68,7 +68,6 @@ import gobblin.configuration.State;
 import gobblin.metrics.GobblinMetrics;
 import gobblin.metrics.Tag;
 import gobblin.metrics.event.EventSubmitter;
-import gobblin.metrics.event.sla.SlaEventSubmitter;
 import gobblin.util.DatasetFilterUtils;
 import gobblin.util.ExecutorsUtils;
 import gobblin.util.HadoopUtils;
@@ -496,7 +495,7 @@ public class MRCompactor implements Compactor {
           switch (result.status()) {
             case PASSED:
               LOG.info("Completeness verification for dataset " + result.dataset() + " passed.");
-              submitSlaEvent(result.dataset(), "CompletenessVerified");
+              submitVerificationSuccessSlaEvent(result);
               result.dataset().setState(VERIFIED);
               if (jobRunner.isPresent()) {
                 jobRunner.get().proceed();
@@ -505,7 +504,7 @@ public class MRCompactor implements Compactor {
             case FAILED:
               if (shouldGiveUpVerification()) {
                 LOG.info("Completeness verification for dataset " + result.dataset() + " has timed out.");
-                submitSlaEvent(result.dataset(), "CompletenessCannotBeVerified");
+                submitVerificationSuccessSlaEvent(result);
                 result.dataset().setState(GIVEN_UP);
                 result.dataset().addThrowable(new RuntimeException(
                     String.format("Completeness verification for dataset %s failed or timed out.", result.dataset())));
@@ -535,7 +534,7 @@ public class MRCompactor implements Compactor {
         if (shouldGiveUpVerification()) {
           for (Dataset dataset : datasetsToBeVerified) {
             LOG.warn(String.format("Completeness verification for dataset %s has timed out.", dataset));
-            submitSlaEvent(dataset, "CompletenessCannotBeVerified");
+            submitFailureSlaEvent(dataset, CompactionSlaEventHelper.COMPLETION_VERIFICATION_FAILED_EVENT_NAME);
             dataset.setState(GIVEN_UP);
             dataset.addThrowable(new RuntimeException(
                 String.format("Completeness verification for dataset %s failed or timed out.", dataset)));
@@ -686,17 +685,12 @@ public class MRCompactor implements Compactor {
       numDatasetsWithThrowables++;
       for (Throwable t : dataset.throwables()) {
         LOG.error("Error processing dataset " + dataset, t);
-        submitSlaEvent(dataset, "CompactionFailed");
+        submitFailureSlaEvent(dataset, CompactionSlaEventHelper.COMPACTION_FAILED_EVENT_NAME);
       }
     }
     if (numDatasetsWithThrowables > 0) {
       throw new RuntimeException(String.format("Failed to process %d datasets.", numDatasetsWithThrowables));
     }
-  }
-
-  private void submitSlaEvent(Dataset dataset, String eventName) {
-    CompactionSlaEventHelper.populateState(dataset, Optional.<Job> absent(), this.fs);
-    new SlaEventSubmitter(this.eventSubmitter, eventName, dataset.jobProps().getProperties()).submit();
   }
 
   /**
@@ -807,6 +801,32 @@ public class MRCompactor implements Compactor {
 
     private void afterExecuteWithThrowable(MRCompactorJobRunner jobRunner, Throwable t) {
       jobRunner.getDataset().skip(t);
+    }
+  }
+
+  /**
+   * Submit an event when completeness verification is successful
+   */
+  private void submitVerificationSuccessSlaEvent(Results.Result result) {
+    try {
+      CompactionSlaEventHelper.getEventSubmitterBuilder(result.dataset(), Optional.<Job> absent(), this.fs)
+      .eventSubmitter(this.eventSubmitter).eventName(CompactionSlaEventHelper.COMPLETION_VERIFICATION_SUCCESS_EVENT_NAME)
+      .additionalMetadata(Maps.transformValues(result.verificationContext(), Functions.toStringFunction())).build()
+      .submit();
+    } catch (Throwable t) {
+      LOG.warn("Failed to submit verification success event:" + t, t);
+    }
+  }
+
+  /**
+   * Submit a failure sla event
+   */
+  private void submitFailureSlaEvent(Dataset dataset, String eventName) {
+    try {
+      CompactionSlaEventHelper.getEventSubmitterBuilder(dataset, Optional.<Job> absent(), this.fs)
+      .eventSubmitter(this.eventSubmitter).eventName(eventName).build().submit();
+    } catch (Throwable t) {
+      LOG.warn("Failed to submit failure sla event:" + t, t);
     }
   }
 }

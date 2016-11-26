@@ -108,6 +108,10 @@ public class JobState extends SourceState {
     public boolean isFailure() {
       return this.equals(FAILED);
     }
+
+    public boolean isRunningOrDone() {
+      return isDone() || this.equals(RUNNING);
+    }
   }
 
   private String jobName;
@@ -485,13 +489,17 @@ public class JobState extends SourceState {
 
     if (keepConfig) {
       jsonWriter.name("properties");
-      jsonWriter.beginObject();
-      for (String key : this.getPropertyNames()) {
-        jsonWriter.name(key).value(this.getProp(key));
-      }
-      jsonWriter.endObject();
+      propsToJson(jsonWriter);
     }
 
+    jsonWriter.endObject();
+  }
+
+  protected void propsToJson(JsonWriter jsonWriter) throws IOException {
+    jsonWriter.beginObject();
+    for (String key : this.getPropertyNames()) {
+      jsonWriter.name(key).value(this.getProp(key));
+    }
     jsonWriter.endObject();
   }
 
@@ -671,6 +679,14 @@ public class JobState extends SourceState {
 
     public int getJobFailures() {
       return Integer.parseInt(super.getProp(ConfigurationKeys.JOB_FAILURES_KEY));
+    }
+
+    @Override
+    protected void propsToJson(JsonWriter jsonWriter) throws IOException {
+      jsonWriter.beginObject();
+      jsonWriter.name(ConfigurationKeys.DATASET_URN_KEY).value(getDatasetUrn());
+      jsonWriter.name(ConfigurationKeys.JOB_FAILURES_KEY).value(getJobFailures());
+      jsonWriter.endObject();
     }
 
     @Override

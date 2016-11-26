@@ -1,6 +1,5 @@
 package gobblin.util.filesystem;
 
-import com.google.common.base.Optional;
 import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -8,8 +7,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+
+import org.apache.hadoop.fs.Path;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import com.google.common.base.Optional;
 
 import gobblin.util.ExecutorsUtils;
 
@@ -77,11 +80,9 @@ public final class PathAlterationDetector implements Runnable {
 
   /**
    * Start monitoring.
-   *
-   * @throws Exception if an error occurs initializing the observer
+   * @throws IOException if an error occurs initializing the observer
    */
-  public synchronized void start()
-      throws Exception {
+  public synchronized void start() throws IOException {
     if (running) {
       throw new IllegalStateException("Monitor is already running");
     }
@@ -99,7 +100,7 @@ public final class PathAlterationDetector implements Runnable {
    * @throws Exception if an error occurs initializing the observer
    */
   public synchronized void stop()
-      throws Exception {
+      throws IOException, InterruptedException {
     stop(interval);
   }
 
@@ -108,11 +109,11 @@ public final class PathAlterationDetector implements Runnable {
    *
    * @param stopInterval the amount of time in milliseconds to wait for the thread to finish.
    * A value of zero will wait until the thread is finished (see {@link Thread#join(long)}).
-   * @throws Exception if an error occurs initializing the observer
+   * @throws IOException if an error occurs initializing the observer
    * @since 2.1
    */
   public synchronized void stop(final long stopInterval)
-      throws Exception {
+      throws IOException, InterruptedException {
     if (!running) {
       throw new IllegalStateException("Monitor is not running");
     }
@@ -143,4 +144,29 @@ public final class PathAlterationDetector implements Runnable {
       return;
     }
   }
+
+  /**
+   * Create and attach {@link PathAlterationDetector}s for the given
+   * root directory and any nested subdirectories under the root directory to the given
+   * {@link PathAlterationDetector}.
+   * @param detector  a {@link PathAlterationDetector}
+   * @param listener a {@link gobblin.util.filesystem.PathAlterationListener}
+   * @param observerOptional Optional observer object. For testing routine, this has been initialized by user.
+   *                         But for general usage, the observer object is created inside this method.
+   * @param rootDirPath root directory
+   * @throws IOException
+   */
+  public void addPathAlterationObserver(PathAlterationListener listener,
+      Optional<PathAlterationObserver> observerOptional, Path rootDirPath)
+      throws IOException {
+    PathAlterationObserver observer;
+    if (observerOptional.isPresent()) {
+      observer = observerOptional.get();
+    } else {
+      observer = new PathAlterationObserver(rootDirPath);
+    }
+    observer.addListener(listener);
+    addObserver(observer);
+  }
+
 }

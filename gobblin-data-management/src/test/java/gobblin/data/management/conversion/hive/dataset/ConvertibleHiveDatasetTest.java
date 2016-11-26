@@ -127,7 +127,7 @@ public class ConvertibleHiveDatasetTest {
     Assert.assertEquals(conversionConfig.getNumBuckets().get(), Integer.valueOf(4));
 
     Properties hiveProps = new Properties();
-    hiveProps.setProperty("mapred.map.tasks", "10");
+    hiveProps.setProperty("mapred.map.tasks", "10,12");
     hiveProps.setProperty("hive.merge.mapfiles", "false");
     Assert.assertEquals(conversionConfig.getHiveRuntimeProperties(), hiveProps);
   }
@@ -136,8 +136,10 @@ public class ConvertibleHiveDatasetTest {
 
     Assert.assertEquals(conversionConfig.getDestinationDbName(), "db1_nestedOrcDb");
     Assert.assertEquals(conversionConfig.getDestinationTableName(), "tb1_nestedOrc");
+    Assert.assertEquals(conversionConfig.getDestinationViewName().get(), "tb1_view");
     Assert.assertEquals(conversionConfig.getDestinationDataPath(), "/tmp/data_nestedOrc/db1/tb1");
 
+    Assert.assertEquals(conversionConfig.isUpdateViewAlwaysEnabled(), false);
     Assert.assertEquals(conversionConfig.getClusterBy(), ImmutableList.of("c3", "c4"));
     Assert.assertEquals(conversionConfig.getNumBuckets().get(), Integer.valueOf(5));
 

@@ -27,7 +27,6 @@ import com.google.common.base.Preconditions;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import com.typesafe.config.Config;
-import com.typesafe.config.ConfigFactory;
 
 import gobblin.data.management.copy.hive.HiveDataset;
 import gobblin.data.management.copy.hive.HiveDatasetFinder;
@@ -53,6 +52,7 @@ import gobblin.util.ConfigUtils;
  *  And the destination table name for nested ORC is set at nestedOrc.tableName
  * </ul>
  * </p>
+ * @see ConversionConfig
  */
 @ToString
 public class ConvertibleHiveDataset extends HiveDataset {
@@ -125,8 +125,12 @@ public class ConvertibleHiveDataset extends HiveDataset {
    *  <ul>
    *    <li>{@value #CLUSTER_BY_KEY}
    *    <li>{@value #NUM_BUCKETS_KEY}
-   *    <li>Any properties with a prefix of {@value #HIVE_RUNTIME_PROPERTIES_KEY_PREFIX} will be available at
-   *    {@link #getHiveRuntimeProperties()} without the prefix.
+   *    <li>{@value #HIVE_RUNTIME_PROPERTIES_LIST_KEY} can be used to provide a list of hive properties to be set before
+   *    conversion. The value should can be an array of keys and values or a comma separated string of keys and values.
+   *    E.g. [key1,value1,key2,value2] or key1,value1,key2,value2
+   *    <li>{@value #DESTINATION_TABLE_PROPERTIES_LIST_KEY} can be used to provide a list of table properties to be set
+   *    on the destination table. The value should can be an array of keys and values or a comma separated string of keys and values.
+   *    E.g. [key1,value1,key2,value2] or key1,value1,key2,value2
    *  </ul>
    * <p>
    */
@@ -134,14 +138,17 @@ public class ConvertibleHiveDataset extends HiveDataset {
   @ToString
   public static class ConversionConfig {
     public static final String DESTINATION_TABLE_KEY = "destination.tableName";
+    public static final String DESTINATION_VIEW_KEY = "destination.viewName";
     public static final String DESTINATION_DB_KEY = "destination.dbName";
     public static final String DESTINATION_DATA_PATH_KEY = "destination.dataPath";
+    public static final String DESTINATION_TABLE_PROPERTIES_LIST_KEY = "destination.tableProperties";
     public static final String CLUSTER_BY_KEY = "clusterByList";
     public static final String NUM_BUCKETS_KEY = "numBuckets";
     public static final String EVOLUTION_ENABLED = "evolution.enabled";
+    public static final String UPDATE_VIEW_ALWAYS_ENABLED = "updateViewAlways.enabled";
     public static final String ROW_LIMIT_KEY = "rowLimit";
     public static final String HIVE_VERSION_KEY = "hiveVersion";
-    private static final String HIVE_RUNTIME_PROPERTIES_KEY_PREFIX = "hiveRuntime";
+    private static final String HIVE_RUNTIME_PROPERTIES_LIST_KEY = "hiveRuntimeProperties";
 
     /***
      * Comma separated list of string that should be used as a prefix for destination partition directory name
@@ -184,13 +191,19 @@ public class ConvertibleHiveDataset extends HiveDataset {
 
     private final String destinationFormat;
     private final String destinationTableName;
+    // destinationViewName : If specified view with 'destinationViewName' is created if not already exists over destinationTableName
+    private final Optional<String> destinationViewName;
     private final String destinationStagingTableName;
     private final String destinationDbName;
     private final String destinationDataPath;
+    private final Properties destinationTableProperties;
     private final List<String> clusterBy;
     private final Optional<Integer> numBuckets;
     private final Properties hiveRuntimeProperties;
     private final boolean evolutionEnabled;
+    // updateViewAlwaysEnabled: If false 'destinationViewName' is only updated when schema evolves; if true 'destinationViewName'
+    // ... is always updated (everytime publish happens)
+    private final boolean updateViewAlwaysEnabled;
     private final Optional<Integer> rowLimit;
     private final List<String> sourceDataPathIdentifier;
 
@@ -209,13 +222,30 @@ public class ConvertibleHiveDataset extends HiveDataset {
       this.destinationDataPath = resolveTemplate(config.getString(DESTINATION_DATA_PATH_KEY), table);
 
       // Optional
+      this.destinationViewName = Optional.fromNullable(resolveTemplate(ConfigUtils.getString(config, DESTINATION_VIEW_KEY, null), table));
+      this.destinationTableProperties =
+          convertKeyValueListToProperties(ConfigUtils.getStringList(config, DESTINATION_TABLE_PROPERTIES_LIST_KEY));
       this.clusterBy = ConfigUtils.getStringList(config, CLUSTER_BY_KEY);
       this.numBuckets = Optional.fromNullable(ConfigUtils.getInt(config, NUM_BUCKETS_KEY, null));
-      this.hiveRuntimeProperties = ConfigUtils
-          .configToProperties(ConfigUtils.getConfig(config, HIVE_RUNTIME_PROPERTIES_KEY_PREFIX, ConfigFactory.empty()));
+
+      this.hiveRuntimeProperties =
+          convertKeyValueListToProperties(ConfigUtils.getStringList(config, HIVE_RUNTIME_PROPERTIES_LIST_KEY));
       this.evolutionEnabled = ConfigUtils.getBoolean(config, EVOLUTION_ENABLED, false);
+      this.updateViewAlwaysEnabled = ConfigUtils.getBoolean(config, UPDATE_VIEW_ALWAYS_ENABLED, true);
       this.rowLimit = Optional.fromNullable(ConfigUtils.getInt(config, ROW_LIMIT_KEY, null));
       this.sourceDataPathIdentifier = ConfigUtils.getStringList(config, SOURCE_DATA_PATH_IDENTIFIER_KEY);
+    }
+
+    private Properties convertKeyValueListToProperties(List<String> keyValueList) {
+      Preconditions.checkArgument(keyValueList.size() % 2 == 0, String.format(
+          "The list %s does not have equal number of keys and values. Size %s", keyValueList, keyValueList.size()));
+      Properties props = new Properties();
+      for (int i = 0; i < keyValueList.size(); i += 2) {
+        String key = keyValueList.get(i);
+        String value = keyValueList.get(i + 1);
+        props.put(key, value);
+      }
+      return props;
     }
   }
 

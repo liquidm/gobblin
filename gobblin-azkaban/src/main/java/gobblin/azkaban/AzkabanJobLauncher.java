@@ -24,6 +24,7 @@ import javax.annotation.Nullable;
 import azkaban.jobExecutor.AbstractJob;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.log4j.Level;
 import org.apache.log4j.Logger;
 
 import org.joda.time.DateTime;
@@ -39,6 +40,7 @@ import com.google.common.io.Closer;
 import gobblin.configuration.ConfigurationKeys;
 import gobblin.configuration.State;
 import gobblin.metrics.GobblinMetrics;
+import gobblin.metrics.RootMetricContext;
 import gobblin.metrics.Tag;
 import gobblin.runtime.JobException;
 import gobblin.runtime.JobLauncher;
@@ -75,6 +77,8 @@ public class AzkabanJobLauncher extends AbstractJob implements ApplicationLaunch
 
   private static final Logger LOG = Logger.getLogger(AzkabanJobLauncher.class);
 
+  public static final String GOBBLIN_LOG_LEVEL_KEY = "gobblin.log.levelOverride";
+
   private static final String HADOOP_FS_DEFAULT_NAME = "fs.default.name";
   private static final String AZKABAN_LINK_JOBEXEC_URL = "azkaban.link.jobexec.url";
   private static final String MAPREDUCE_JOB_CREDENTIALS_BINARY = "mapreduce.job.credentials.binary";
@@ -92,6 +96,11 @@ public class AzkabanJobLauncher extends AbstractJob implements ApplicationLaunch
 
   public AzkabanJobLauncher(String jobId, Properties props) throws Exception {
     super(jobId, LOG);
+
+    if (props.containsKey(GOBBLIN_LOG_LEVEL_KEY)) {
+      Level logLevel = Level.toLevel(props.getProperty(GOBBLIN_LOG_LEVEL_KEY), Level.INFO);
+      Logger.getLogger("gobblin").setLevel(logLevel);
+    }
 
     this.props = new Properties();
     this.props.putAll(props);
@@ -133,6 +142,7 @@ public class AzkabanJobLauncher extends AbstractJob implements ApplicationLaunch
 
     List<Tag<?>> tags = Lists.newArrayList();
     tags.addAll(Tag.fromMap(AzkabanTags.getAzkabanTags()));
+    RootMetricContext.get(tags);
     GobblinMetrics.addCustomTagsToProperties(this.props, tags);
 
     // If the job launcher type is not specified in the job configuration,

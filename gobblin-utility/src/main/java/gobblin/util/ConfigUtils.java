@@ -12,18 +12,27 @@
 
 package gobblin.util;
 
+import java.io.IOException;
+import java.io.StringReader;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
+import java.util.TreeSet;
 
 import org.apache.commons.lang3.StringUtils;
 
+import com.google.common.base.Function;
 import com.google.common.base.Optional;
 import com.google.common.base.Splitter;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Lists;
+import com.opencsv.CSVReader;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigException;
 import com.typesafe.config.ConfigFactory;
@@ -39,19 +48,57 @@ import gobblin.configuration.State;
 public class ConfigUtils {
 
   /**
+   * List of keys that should be excluded when converting to typesafe config.
+   * Usually, it is the key that is both the parent object of a value and a value, which is disallowed by Typesafe.
+   */
+  private static final String GOBBLIN_CONFIG_BLACKLIST_KEYS = "gobblin.config.blacklistKeys";
+
+  /**
+   * A suffix that is automatically appended to property keys that are prefixes of other
+   * property keys. This is used during Properties -> Config -> Properties conversion since
+   * typesafe config does not allow such properties. */
+  public static final String STRIP_SUFFIX = ".ROOT_VALUE";
+
+  /**
    * Convert a given {@link Config} instance to a {@link Properties} instance.
    *
    * @param config the given {@link Config} instance
    * @return a {@link Properties} instance
    */
   public static Properties configToProperties(Config config) {
+    return configToProperties(config, Optional.<String>absent());
+  }
+
+  /**
+   * Convert a given {@link Config} instance to a {@link Properties} instance.
+   *
+   * @param config the given {@link Config} instance
+   * @param prefix an optional prefix; if present, only properties whose name starts with the prefix
+   *        will be returned.
+   * @return a {@link Properties} instance
+   */
+  public static Properties configToProperties(Config config, Optional<String> prefix) {
     Properties properties = new Properties();
     Config resolvedConfig = config.resolve();
     for (Map.Entry<String, ConfigValue> entry : resolvedConfig.entrySet()) {
-      properties.setProperty(entry.getKey(), resolvedConfig.getString(entry.getKey()));
+      if (!prefix.isPresent() || entry.getKey().startsWith(prefix.get())) {
+        String propKey = desanitizeKey(entry.getKey());
+        properties.setProperty(propKey, resolvedConfig.getString(entry.getKey()));
+      }
     }
 
     return properties;
+  }
+
+  /**
+   * Convert a given {@link Config} instance to a {@link Properties} instance.
+   *
+   * @param config the given {@link Config} instance
+   * @param prefix only properties whose name starts with the prefix will be returned.
+   * @return a {@link Properties} instance
+   */
+  public static Properties configToProperties(Config config, String prefix) {
+    return configToProperties(config, Optional.of(prefix));
   }
 
   /**
@@ -92,6 +139,37 @@ public class ConfigUtils {
   }
 
   /**
+   * Finds a list of properties whose keys are complete prefix of other keys. This function is
+   * meant to be used during conversion from Properties to typesafe Config as the latter does not
+   * support this scenario.
+   * @param     properties      the Properties collection to inspect
+   * @param     keyPrefix       an optional key prefix which limits which properties are inspected.
+   * */
+  public static Set<String> findFullPrefixKeys(Properties properties,
+                                               Optional<String> keyPrefix) {
+    TreeSet<String> propNames = new TreeSet<>();
+    for (Map.Entry<Object, Object> entry : properties.entrySet()) {
+      String entryKey = entry.getKey().toString();
+      if (StringUtils.startsWith(entryKey, keyPrefix.or(StringUtils.EMPTY))) {
+        propNames.add(entryKey);
+      }
+    }
+
+    Set<String> result = new HashSet<>();
+    String lastKey = null;
+    Iterator<String> sortedKeysIter = propNames.iterator();
+    while(sortedKeysIter.hasNext()) {
+      String propName = sortedKeysIter.next();
+      if (null != lastKey && propName.startsWith(lastKey + ".")) {
+        result.add(lastKey);
+      }
+      lastKey = propName;
+    }
+
+    return result;
+  }
+
+  /**
    * Convert all the keys that start with a <code>prefix</code> in {@link Properties} to a {@link Config} instance.
    *
    * <p>
@@ -105,14 +183,39 @@ public class ConfigUtils {
    * @return a {@link Config} instance
    */
   public static Config propertiesToConfig(Properties properties, Optional<String> prefix) {
+    Set<String> blacklistedKeys = new HashSet<>();
+    if (properties.containsKey(GOBBLIN_CONFIG_BLACKLIST_KEYS)) {
+      blacklistedKeys = new HashSet<>(Splitter.on(',').omitEmptyStrings().trimResults()
+          .splitToList(properties.getProperty(GOBBLIN_CONFIG_BLACKLIST_KEYS)));
+    }
+
+    Set<String> fullPrefixKeys = findFullPrefixKeys(properties, prefix);
+
     ImmutableMap.Builder<String, Object> immutableMapBuilder = ImmutableMap.builder();
     for (Map.Entry<Object, Object> entry : properties.entrySet()) {
-      if (StringUtils.startsWith(entry.getKey().toString(), prefix.or(StringUtils.EMPTY))) {
-        immutableMapBuilder.put(entry.getKey().toString(), entry.getValue());
+      String entryKey = entry.getKey().toString();
+      if (StringUtils.startsWith(entryKey, prefix.or(StringUtils.EMPTY)) &&
+          !blacklistedKeys.contains(entryKey)) {
+        if (fullPrefixKeys.contains(entryKey)) {
+          entryKey = sanitizeFullPrefixKey(entryKey);
+        } else if (entryKey.endsWith(STRIP_SUFFIX)) {
+          throw new RuntimeException("Properties are not allowed to end in " + STRIP_SUFFIX);
+        }
+        immutableMapBuilder.put(entryKey, entry.getValue());
       }
     }
     return ConfigFactory.parseMap(immutableMapBuilder.build());
   }
+
+  public static String sanitizeFullPrefixKey(String propKey) {
+    return propKey + STRIP_SUFFIX;
+  }
+
+  public static String desanitizeKey(String propKey) {
+    return propKey.endsWith(STRIP_SUFFIX) ?
+        propKey.substring(0, propKey.length() - STRIP_SUFFIX.length()) : propKey;
+  }
+
 
   /**
    * Convert all the keys that start with a <code>prefix</code> in {@link Properties} to a
@@ -144,24 +247,20 @@ public class ConfigUtils {
    * treated as strings.*/
   private static Map<String, Object> guessPropertiesTypes(Map<Object, Object> srcProperties) {
     Map<String, Object> res = new HashMap<>();
-    for (Map.Entry<Object, Object> prop: srcProperties.entrySet()) {
+    for (Map.Entry<Object, Object> prop : srcProperties.entrySet()) {
       Object value = prop.getValue();
       if (null != value && value instanceof String && !Strings.isNullOrEmpty(value.toString())) {
         try {
           value = Long.parseLong(value.toString());
-        }
-        catch (NumberFormatException e) {
+        } catch (NumberFormatException e) {
           try {
             value = Double.parseDouble(value.toString());
-          }
-          catch (NumberFormatException e2) {
+          } catch (NumberFormatException e2) {
             if (value.toString().equalsIgnoreCase("true") || value.toString().equalsIgnoreCase("yes")) {
               value = Boolean.TRUE;
-            }
-            else if (value.toString().equalsIgnoreCase("false") || value.toString().equalsIgnoreCase("no")) {
+            } else if (value.toString().equalsIgnoreCase("false") || value.toString().equalsIgnoreCase("no")) {
               value = Boolean.FALSE;
-            }
-            else {
+            } else {
               // nothing to do
             }
           }
@@ -252,6 +351,7 @@ public class ConfigUtils {
     }
     return def;
   }
+
   /**
    * Return {@link Config} value at <code>path</code> if <code>config</code> has path. If not return <code>def</code>
    *
@@ -267,10 +367,25 @@ public class ConfigUtils {
   }
 
   /**
-   * An extension to {@link Config#getStringList(String)}. The string list can either be specified as a TypeSafe {@link ConfigList} of strings
-   * or as list of comma separated strings.
+   * <p>
+   * An extension to {@link Config#getStringList(String)}. The value at <code>path</code> can either be a TypeSafe
+   * {@link ConfigList} of strings in which case it delegates to {@link Config#getStringList(String)} or as list of
+   * comma separated strings in which case it splits the comma separated list.
    *
-   * Returns an empty list of <code>path</code> does not exist
+   *
+   * </p>
+   * Additionally
+   * <li>Returns an empty list if <code>path</code> does not exist
+   * <li>removes any leading and lagging quotes from each string in the returned list.
+   *
+   * Examples below will all return a list [1,2,3] without quotes
+   *
+   * <ul>
+   * <li> a.b=[1,2,3]
+   * <li> a.b=["1","2","3"]
+   * <li> a.b=1,2,3
+   * <li> a.b="1","2","3"
+   * </ul>
    *
    * @param config in which the path may be present
    * @param path key to look for in the config object
@@ -282,14 +397,40 @@ public class ConfigUtils {
       return Collections.emptyList();
     }
 
+    List<String> valueList = Lists.newArrayList();
     try {
-      return config.getStringList(path);
+      valueList = config.getStringList(path);
     } catch (ConfigException.WrongType e) {
-      Splitter tokenSplitter = Splitter.on(",").omitEmptyStrings().trimResults();
-      return tokenSplitter.splitToList(config.getString(path));
+
+      /*
+       * Using CSV Reader as values could be quoted.
+       * E.g The string "a","false","b","10,12" will be split to a list of 4 elements and not 5.
+       *
+       * a
+       * false
+       * b
+       * 10,12
+       */
+      try (CSVReader csvr = new CSVReader(new StringReader(config.getString(path)));) {
+        valueList = Lists.newArrayList(csvr.readNext());
+      } catch (IOException ioe) {
+        throw new RuntimeException(ioe);
+      }
     }
 
+    // Remove any leading or lagging quotes in the values
+    // [\"a\",\"b\"] ---> [a,b]
+    return Lists.newArrayList(Lists.transform(valueList, new Function<String, String>() {
+      @Override
+      public String apply(String input) {
+        if (input == null) {
+          return input;
+        }
+        return input.replaceAll("^\"|\"$", "");
+      }
+    }));
   }
+
   /**
    * Check if the given <code>key</code> exists in <code>config</code> and it is not null or empty
    * Uses {@link StringUtils#isNotBlank(CharSequence)}
@@ -307,8 +448,8 @@ public class ConfigUtils {
    */
   public static boolean verifySubset(Config superConfig, Config subConfig) {
     for (Map.Entry<String, ConfigValue> entry : subConfig.entrySet()) {
-      if (!superConfig.hasPath(entry.getKey())
-          || !superConfig.getValue(entry.getKey()).unwrapped().equals(entry.getValue().unwrapped())) {
+      if (!superConfig.hasPath(entry.getKey()) || !superConfig.getValue(entry.getKey()).unwrapped()
+          .equals(entry.getValue().unwrapped())) {
         return false;
       }
     }

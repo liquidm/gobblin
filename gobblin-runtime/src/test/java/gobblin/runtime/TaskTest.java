@@ -14,7 +14,9 @@ package gobblin.runtime;
 
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyInt;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
@@ -78,14 +80,18 @@ public class TaskTest {
     TaskExecutor taskExecutor = new TaskExecutor(new Properties());
 
     // Create the Task
-    Task task = new Task(mockTaskContext, mockTaskStateTracker, taskExecutor, Optional.<CountDownLatch> absent());
+    Task realTask = new Task(mockTaskContext, mockTaskStateTracker, taskExecutor, Optional.<CountDownLatch> absent());
+    Task task = spy(realTask);
+    doNothing().when(task).submitTaskCommittedEvent();
 
     // The first run of the Task should fail
     task.run();
+    task.commit();
     Assert.assertEquals(task.getTaskState().getWorkingState(), WorkUnitState.WorkingState.FAILED);
 
     // The second run of the Task should succeed
     task.run();
+    task.commit();
     Assert.assertEquals(task.getTaskState().getWorkingState(), WorkUnitState.WorkingState.SUCCESSFUL);
   }
 

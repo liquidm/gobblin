@@ -1,5 +1,13 @@
 package gobblin.runtime.job_exec;
 
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -9,18 +17,25 @@ import org.slf4j.LoggerFactory;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Optional;
 import com.google.common.base.Preconditions;
+import com.google.common.io.Closer;
 import com.google.common.util.concurrent.AbstractIdleService;
+import com.google.common.util.concurrent.ExecutionList;
 import com.typesafe.config.ConfigFactory;
 
 import gobblin.configuration.ConfigurationKeys;
+import gobblin.instrumented.Instrumented;
+import gobblin.metrics.GobblinMetrics;
+import gobblin.metrics.MetricContext;
+import gobblin.metrics.Tag;
 import gobblin.runtime.JobContext;
 import gobblin.runtime.JobException;
 import gobblin.runtime.JobLauncher;
 import gobblin.runtime.JobLauncherFactory;
 import gobblin.runtime.JobLauncherFactory.JobLauncherType;
+import gobblin.runtime.JobState;
 import gobblin.runtime.JobState.RunningState;
 import gobblin.runtime.api.Configurable;
-import gobblin.runtime.api.GobblinInstanceDriver;
+import gobblin.runtime.api.GobblinInstanceEnvironment;
 import gobblin.runtime.api.JobExecution;
 import gobblin.runtime.api.JobExecutionDriver;
 import gobblin.runtime.api.JobExecutionLauncher;
@@ -33,19 +48,25 @@ import gobblin.runtime.listeners.AbstractJobListener;
 import gobblin.runtime.std.DefaultConfigurableImpl;
 import gobblin.runtime.std.JobExecutionStateListeners;
 import gobblin.runtime.std.JobExecutionUpdatable;
+import gobblin.util.ExecutorsUtils;
+
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+
 
 /**
  * An implementation of JobExecutionDriver which acts as an adapter to the legacy
  * {@link JobLauncher} API.
  */
-public class JobLauncherExecutionDriver extends AbstractIdleService implements JobExecutionDriver {
+public class JobLauncherExecutionDriver extends FutureTask<JobExecutionResult> implements JobExecutionDriver {
   private final Logger _log;
-  private final Configurable _sysConfig;
-  private final JobLauncher _legacyLauncher;
   private final JobSpec _jobSpec;
   private final JobExecutionUpdatable _jobExec;
   private final JobExecutionState _jobState;
   private final JobExecutionStateListeners _callbackDispatcher;
+  private final ExecutionList _executionList;
+  private final DriverRunnable _runnable;
+  private final Closer _closer;
   private JobContext _jobContext;
 
   /**
@@ -61,23 +82,63 @@ public class JobLauncherExecutionDriver extends AbstractIdleService implements J
    * @param log                   an optional logger to be used; if none is specified, a default one
    *                              will be instantiated.
    */
-  public JobLauncherExecutionDriver(Configurable sysConfig, JobSpec jobSpec,
+  public static JobLauncherExecutionDriver create(Configurable sysConfig, JobSpec jobSpec,
       Optional<JobLauncherFactory.JobLauncherType> jobLauncherType,
-      Optional<Logger> log) {
-    _log = log.isPresent() ? log.get() : LoggerFactory.getLogger(getClass());
-    _sysConfig = sysConfig;
-    _jobSpec = jobSpec;
-    _jobExec = JobExecutionUpdatable.createFromJobSpec(jobSpec);
-    _callbackDispatcher = new JobExecutionStateListeners(_log);
-    _jobState = new JobExecutionState(_jobSpec, _jobExec,
-                                      Optional.<JobExecutionStateListener>of(_callbackDispatcher));
-    _legacyLauncher =
-        createLauncher(jobLauncherType.isPresent() ?
-                      Optional.of(jobLauncherType.get().toString()) :
-                      Optional.<String>absent());
+      Optional<Logger> log, boolean instrumentationEnabled,
+      JobExecutionLauncher.StandardMetrics launcherMetrics) {
+
+    Logger actualLog = log.isPresent() ? log.get() : LoggerFactory.getLogger(JobLauncherExecutionDriver.class);
+
+    JobExecutionStateListeners _callbackDispatcher = new JobExecutionStateListeners(actualLog);
+    JobExecutionUpdatable _jobExec = JobExecutionUpdatable.createFromJobSpec(jobSpec);
+    JobExecutionState _jobState = new JobExecutionState(jobSpec, _jobExec,
+        Optional.<JobExecutionStateListener>of(_callbackDispatcher));
+
+    JobLauncher jobLauncher = createLauncher(sysConfig, jobSpec, actualLog, jobLauncherType.isPresent() ?
+        Optional.of(jobLauncherType.get().toString()) :
+        Optional.<String>absent());
+    JobListenerToJobStateBridge bridge = new JobListenerToJobStateBridge(actualLog, _jobState, instrumentationEnabled, launcherMetrics);
+
+    DriverRunnable runnable = new DriverRunnable(jobLauncher, bridge, _jobState);
+
+    return new JobLauncherExecutionDriver(jobSpec, actualLog, runnable);
   }
 
-  private JobLauncher createLauncher(Optional<String> jobLauncherType) {
+  protected JobLauncherExecutionDriver(JobSpec jobSpec, Logger log, DriverRunnable runnable) {
+    super(runnable);
+    _closer = Closer.create();
+    _closer.register(runnable.getJobLauncher());
+    _log = log;
+    _jobSpec = jobSpec;
+    _jobExec = JobExecutionUpdatable.createFromJobSpec(jobSpec);
+    _callbackDispatcher = _closer.register(new JobExecutionStateListeners(_log));
+    _jobState = new JobExecutionState(_jobSpec, _jobExec,
+                                      Optional.<JobExecutionStateListener>of(_callbackDispatcher));
+    _executionList = new ExecutionList();
+    _runnable = runnable;
+  }
+
+  /**
+   * A runnable that actually executes the job.
+   */
+  @AllArgsConstructor
+  @Getter
+  private static class DriverRunnable implements Callable<JobExecutionResult> {
+
+    private final JobLauncher jobLauncher;
+    private final JobListenerToJobStateBridge bridge;
+    private final JobExecutionState jobState;
+
+    @Override
+    public JobExecutionResult call() throws JobException, InterruptedException, TimeoutException  {
+        jobLauncher.launchJob(bridge);
+        jobState.awaitForDone(Long.MAX_VALUE);
+        return JobExecutionResult.createFromState(jobState);
+    }
+  }
+
+  private static JobLauncher createLauncher(Configurable _sysConfig, JobSpec _jobSpec, Logger _log,
+      Optional<String> jobLauncherType) {
     if (jobLauncherType.isPresent()) {
       return JobLauncherFactory.newJobLauncher(_sysConfig.getConfigAsProperties(),
              _jobSpec.getConfigAsProperties(), jobLauncherType.get());
@@ -103,14 +164,22 @@ public class JobLauncherExecutionDriver extends AbstractIdleService implements J
     return _jobState;
   }
 
-  @Override
-  protected void startUp() throws Exception {
+  protected void startAsync() throws JobException {
     _log.info("Starting " + getClass().getSimpleName());
-    _legacyLauncher.launchJob(new JobListenerToJobStateBridge());
+    ExecutorsUtils.newThreadFactory(Optional.of(_log), Optional.of("job-launcher-execution-driver")).newThread(this).start();
   }
 
   @Override
-  protected void shutDown() throws Exception {
+  protected void done() {
+    _executionList.execute();
+    try {
+      shutDown();
+    } catch (IOException ioe) {
+      _log.error("Failed to close job launcher.");
+    }
+  }
+
+  private void shutDown() throws IOException {
     _log.info("Shutting down " + getClass().getSimpleName());
     if (null != _jobContext) {
       switch (_jobContext.getJobState().getState()) {
@@ -131,27 +200,47 @@ public class JobLauncherExecutionDriver extends AbstractIdleService implements J
       }
     }
 
-    _legacyLauncher.close();
+    _closer.close();
   }
 
+  @Override
+  public void addListener(Runnable listener, Executor executor) {
+    _executionList.add(listener, executor);
+  }
 
-  class JobListenerToJobStateBridge extends AbstractJobListener {
+  static class JobListenerToJobStateBridge extends AbstractJobListener {
 
-    public JobListenerToJobStateBridge() {
-      super(Optional.of(JobLauncherExecutionDriver.this._log));
+    private final JobExecutionState _jobState;
+    private final boolean _instrumentationEnabled;
+    private final JobExecutionLauncher.StandardMetrics _launcherMetrics;
+
+    private JobContext _jobContext;
+
+    public JobListenerToJobStateBridge(Logger log, JobExecutionState jobState,
+        boolean instrumentationEnabled, JobExecutionLauncher.StandardMetrics launcherMetrics) {
+      super(Optional.of(log));
+      _jobState = jobState;
+      _instrumentationEnabled = instrumentationEnabled;
+      _launcherMetrics = launcherMetrics;
     }
+
 
     @Override
     public void onJobPrepare(JobContext jobContext) throws Exception {
       super.onJobPrepare(jobContext);
       _jobContext = jobContext;
-      _jobState.switchToPending();
+      if (_jobState.getRunningState() == null) {
+        _jobState.switchToPending();
+      }
+      _jobState.switchToRunning();
+      if (_instrumentationEnabled && null != _launcherMetrics) {
+        _launcherMetrics.getNumJobsLaunched().inc();
+      }
     }
 
     @Override
     public void onJobStart(JobContext jobContext) throws Exception {
       super.onJobStart(jobContext);
-      _jobState.switchToRunning();
     }
 
     @Override
@@ -161,13 +250,22 @@ public class JobLauncherExecutionDriver extends AbstractIdleService implements J
           || jobContext.getJobState().getState() == RunningState.FAILED,
           "Unexpected state: " + jobContext.getJobState().getState() + " in " + jobContext);
       super.onJobCompletion(jobContext);
+      if (_instrumentationEnabled && null != _launcherMetrics) {
+        _launcherMetrics.getNumJobsCompleted().inc();
+      }
       if (jobContext.getJobState().getState() == RunningState.FAILED) {
+        if (_instrumentationEnabled && null != _launcherMetrics) {
+          _launcherMetrics.getNumJobsFailed().inc();
+        }
         _jobState.switchToFailed();
       }
       else {
         // TODO Remove next line once the JobLauncher starts sending notifications for success
         _jobState.switchToSuccessful();
         _jobState.switchToCommitted();
+        if (_instrumentationEnabled && null != _launcherMetrics) {
+          _launcherMetrics.getNumJobsCommitted().inc();
+        }
       }
     }
 
@@ -175,15 +273,14 @@ public class JobLauncherExecutionDriver extends AbstractIdleService implements J
     public void onJobCancellation(JobContext jobContext) throws Exception {
       super.onJobCancellation(jobContext);
       _jobState.switchToCancelled();
+      if (_instrumentationEnabled && null != _launcherMetrics) {
+        _launcherMetrics.getNumJobsCancelled().inc();
+      }
     }
-
-    // FIXME Currently, we can't detect that the transition RUNNING -> SUCCESSFUL as
-    // there is no notification. That transition happens internally in JobContext.
-
   }
 
   @VisibleForTesting JobLauncher getLegacyLauncher() {
-    return _legacyLauncher;
+    return _runnable.getJobLauncher();
   }
 
   /** {@inheritDoc} */
@@ -214,11 +311,17 @@ public class JobLauncherExecutionDriver extends AbstractIdleService implements J
    *       use JobExecutionDriver class name plus "." + jobSpec
    * </ul>
    */
-  public static class Launcher implements JobExecutionLauncher {
+  public static class Launcher implements JobExecutionLauncher, GobblinInstanceEnvironment {
     private Optional<JobLauncherType> _jobLauncherType = Optional.absent();
     private Optional<Configurable> _sysConfig = Optional.absent();
-    private Optional<GobblinInstanceDriver> _gobblinInstance = Optional.absent();
+    private Optional<GobblinInstanceEnvironment> _gobblinEnv = Optional.absent();
     private Optional<Logger> _log = Optional.absent();
+    private Optional<MetricContext> _metricContext = Optional.absent();
+    private Optional<Boolean> _instrumentationEnabled = Optional.absent();
+    private JobExecutionLauncher.StandardMetrics _metrics;
+
+    public Launcher() {
+    }
 
     /** Leave unchanged for */
     public Launcher withJobLauncherType(JobLauncherType jobLauncherType) {
@@ -233,11 +336,12 @@ public class JobLauncherExecutionDriver extends AbstractIdleService implements J
 
     /** System-wide settings */
     public Configurable getDefaultSysConfig() {
-      return _gobblinInstance.isPresent() ?
-          _gobblinInstance.get().getSysConfig() :
+      return _gobblinEnv.isPresent() ?
+          _gobblinEnv.get().getSysConfig() :
           DefaultConfigurableImpl.createFromConfig(ConfigFactory.empty());
     }
 
+    @Override
     public Configurable getSysConfig() {
       if (!_sysConfig.isPresent()) {
         _sysConfig = Optional.of(getDefaultSysConfig());
@@ -251,36 +355,109 @@ public class JobLauncherExecutionDriver extends AbstractIdleService implements J
     }
 
     /** Parent Gobblin instance */
-    public Launcher withGobblinInstance(GobblinInstanceDriver gobblinInstance) {
-      _gobblinInstance = Optional.of(gobblinInstance);
+    public Launcher withGobblinInstanceEnvironment(GobblinInstanceEnvironment gobblinInstance) {
+      _gobblinEnv = Optional.of(gobblinInstance);
       return this;
     }
 
-    public Optional<GobblinInstanceDriver> getGobblinInstance() {
-      return _gobblinInstance;
-    }
-
-    public Logger getDefaultLog(JobSpec jobSpec) {
-      return getGobblinInstance().isPresent() ?
-          getJobLogger(getGobblinInstance().get().getLog(), jobSpec) :
-          getJobLogger(LoggerFactory.getLogger(JobLauncherExecutionDriver.class), jobSpec);
+    public Optional<GobblinInstanceEnvironment> getGobblinInstanceEnvironment() {
+      return _gobblinEnv;
     }
 
     public Logger getLog(JobSpec jobSpec) {
-      if (!_log.isPresent()) {
-        _log = Optional.of(getDefaultLog(jobSpec));
+      return getJobLogger(getLog(), jobSpec);
+    }
+
+    public Launcher withInstrumentationEnabled(boolean enabled) {
+      _instrumentationEnabled = Optional.of(enabled);
+      return this;
+    }
+
+    public boolean getDefaultInstrumentationEnabled() {
+      return _gobblinEnv.isPresent() ? _gobblinEnv.get().isInstrumentationEnabled() :
+          GobblinMetrics.isEnabled(getSysConfig().getConfig());
+    }
+
+    @Override
+    public boolean isInstrumentationEnabled() {
+      if (!_instrumentationEnabled.isPresent()) {
+        _instrumentationEnabled = Optional.of(getDefaultInstrumentationEnabled());
       }
-      return _log.get();
+      return _instrumentationEnabled.get();
     }
 
     private static Logger getJobLogger(Logger parentLog, JobSpec jobSpec) {
       return LoggerFactory.getLogger(parentLog.getName() + "." + jobSpec.toShortString());
     }
 
+    public Launcher withMetricContext(MetricContext instanceMetricContext) {
+      _metricContext = Optional.of(instanceMetricContext);
+      return this;
+    }
+
+    @Override
+    public MetricContext getMetricContext() {
+      if (!_metricContext.isPresent()) {
+        _metricContext = Optional.of(getDefaultMetricContext());
+      }
+      return _metricContext.get();
+    }
+
+    public MetricContext getDefaultMetricContext() {
+      if (_gobblinEnv.isPresent()) {
+        return _gobblinEnv.get().getMetricContext()
+            .childBuilder(JobExecutionLauncher.class.getSimpleName()).build();
+      }
+      gobblin.configuration.State fakeState =
+          new gobblin.configuration.State(getSysConfig().getConfigAsProperties());
+      List<Tag<?>> tags = new ArrayList<>();
+      MetricContext res = Instrumented.getMetricContext(fakeState, Launcher.class, tags);
+      return res;
+    }
+
     @Override public JobExecutionDriver launchJob(JobSpec jobSpec) {
       Preconditions.checkNotNull(jobSpec);
-      return new JobLauncherExecutionDriver(getSysConfig(), jobSpec, _jobLauncherType,
-          Optional.of(getLog(jobSpec)));
+      return JobLauncherExecutionDriver.create(getSysConfig(), jobSpec, _jobLauncherType,
+          Optional.of(getLog(jobSpec)), isInstrumentationEnabled(), getMetrics());
+    }
+
+    @Override public List<Tag<?>> generateTags(gobblin.configuration.State state) {
+      return Collections.emptyList();
+    }
+
+    @Override public void switchMetricContext(List<Tag<?>> tags) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override public void switchMetricContext(MetricContext context) {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override public String getInstanceName() {
+      return _gobblinEnv.isPresent() ? _gobblinEnv.get().getInstanceName() : getClass().getName();
+    }
+
+    public Logger getDefaultLog() {
+      return _gobblinEnv.isPresent() ? _gobblinEnv.get().getLog() : LoggerFactory.getLogger(getClass());
+    }
+
+    @Override public Logger getLog() {
+      if (! _log.isPresent()) {
+        _log = Optional.of(getDefaultLog());
+      }
+      return _log.get();
+    }
+
+    public Launcher withLog(Logger log) {
+      _log = Optional.of(log);
+      return this;
+    }
+
+    @Override public StandardMetrics getMetrics() {
+      if (_metrics == null) {
+        _metrics = new JobExecutionLauncher.StandardMetrics(this);
+      }
+      return _metrics;
     }
 
   }
@@ -291,7 +468,7 @@ public class JobLauncherExecutionDriver extends AbstractIdleService implements J
 
   @Override public boolean isDone() {
     RunningState runState = getJobExecutionStatus().getRunningState();
-    return runState.isDone();
+    return runState == null ? false : runState.isDone() ;
   }
 
   @Override public boolean cancel(boolean mayInterruptIfRunning) {
@@ -307,34 +484,34 @@ public class JobLauncherExecutionDriver extends AbstractIdleService implements J
     }
     try {
       // No special processing of callbacks necessary
-      _legacyLauncher.cancelJob(new AbstractJobListener(){});
+      getLegacyLauncher().cancelJob(new AbstractJobListener(){});
     } catch (JobException e) {
       throw new RuntimeException("Unable to cancel job " + _jobSpec + ": " + e, e);
     }
-    return true;
+    return super.cancel(mayInterruptIfRunning);
   }
 
   @Override public boolean isCancelled() {
     return getJobExecutionStatus().getRunningState().isCancelled();
   }
 
-  @Override public JobExecutionResult get() throws InterruptedException {
+  @Override
+  public JobExecutionResult get()
+      throws InterruptedException {
     try {
-      return get(0, TimeUnit.MILLISECONDS);
-    } catch (TimeoutException e) {
-      throw new Error("This should never happen.");
+      return super.get();
+    } catch (ExecutionException ee) {
+      return JobExecutionResult.createFailureResult(ee.getCause());
     }
   }
 
   @Override
   public JobExecutionResult get(long timeout, TimeUnit unit)
-         throws InterruptedException, TimeoutException {
-    Preconditions.checkNotNull(unit);
-    if (0 == timeout) {
-      timeout = Long.MAX_VALUE;
-      unit = TimeUnit.SECONDS;
+      throws InterruptedException, TimeoutException {
+    try {
+      return super.get(timeout, unit);
+    } catch (ExecutionException ee) {
+      return JobExecutionResult.createFailureResult(ee.getCause());
     }
-    getJobExecutionState().awaitForDone(unit.toMillis(timeout));
-    return JobExecutionResult.createFromState(getJobExecutionState());
   }
 }

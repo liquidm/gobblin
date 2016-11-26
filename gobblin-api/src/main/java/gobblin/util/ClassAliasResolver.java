@@ -11,15 +11,17 @@
  */
 package gobblin.util;
 
+import java.util.List;
 import java.util.Map;
 
 import lombok.extern.slf4j.Slf4j;
 
 import org.reflections.Reflections;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Lists;
 import com.google.common.collect.Maps;
-import com.google.common.collect.Sets;
 
 import gobblin.annotation.Alias;
 
@@ -43,21 +45,27 @@ import gobblin.annotation.Alias;
 @Slf4j
 public class ClassAliasResolver<T> {
 
+  // Scan all packages in the classpath with prefix gobblin when class is loaded.
+  // Since scan is expensive we do it only once when class is loaded.
+  private static final Reflections REFLECTIONS = new Reflections("gobblin");
+
   Map<String, Class<? extends T>> aliasToClassCache;
+  private final List<Alias> aliasObjects;
   private final Class<T> subtypeOf;
 
   public ClassAliasResolver(Class<T> subTypeOf) {
     Map<String, Class<? extends T>> cache = Maps.newHashMap();
-    // Scan all packages
-    Reflections reflections = new Reflections("gobblin");
-    for (Class<? extends T> clazz : reflections.getSubTypesOf(subTypeOf)) {
+    this.aliasObjects = Lists.newArrayList();
+    for (Class<? extends T> clazz : REFLECTIONS.getSubTypesOf(subTypeOf)) {
       if (clazz.isAnnotationPresent(Alias.class)) {
-        String alias = clazz.getAnnotation(Alias.class).value();
+        Alias aliasObject = clazz.getAnnotation(Alias.class);
+        String alias = aliasObject.value().toUpperCase();
         if (cache.containsKey(alias)) {
           log.warn(String.format("Alias %s already mapped to class %s. Mapping for %s will be ignored", alias,
               cache.get(alias).getCanonicalName(), clazz.getCanonicalName()));
         } else {
-          cache.put(clazz.getAnnotation(Alias.class).value(), clazz);
+          aliasObjects.add(aliasObject);
+          cache.put(clazz.getAnnotation(Alias.class).value().toUpperCase(), clazz);
         }
       }
     }
@@ -74,20 +82,20 @@ public class ClassAliasResolver<T> {
    * Return the input <code>possibleAlias</code> if no mapping is found.
    */
   public String resolve(final String possibleAlias) {
-    if (this.aliasToClassCache.containsKey(possibleAlias)) {
-      return this.aliasToClassCache.get(possibleAlias).getName();
+    if (this.aliasToClassCache.containsKey(possibleAlias.toUpperCase())) {
+      return this.aliasToClassCache.get(possibleAlias.toUpperCase()).getName();
     }
     return possibleAlias;
   }
 
   /**
-   * Attempts to resolve the given alias to a class. It first tries to find a class in the classpath with that alias
-   * and which is a subclass of {@link #subtypeOf}, if it fails it tries to find a class in the classpath with the
-   * exact input name.
+   * Attempts to resolve the given alias to a class. It first tries to find a class in the classpath with this alias
+   * and is also a subclass of {@link #subtypeOf}, if it fails it returns a class object for name
+   * <code>aliasOrClassName</code>.
    */
   public Class<? extends T> resolveClass(final String aliasOrClassName) throws ClassNotFoundException {
-    if (this.aliasToClassCache.containsKey(aliasOrClassName)) {
-      return this.aliasToClassCache.get(aliasOrClassName);
+    if (this.aliasToClassCache.containsKey(aliasOrClassName.toUpperCase())) {
+      return this.aliasToClassCache.get(aliasOrClassName.toUpperCase());
     }
     try {
       return Class.forName(aliasOrClassName).asSubclass(this.subtypeOf);
@@ -95,5 +103,16 @@ public class ClassAliasResolver<T> {
       throw new ClassNotFoundException(
           String.format("Found class %s but it cannot be cast to %s.", aliasOrClassName, this.subtypeOf.getName()), cce);
     }
+  }
+
+  /**
+   * Get the map from found aliases to classes.
+   */
+  public Map<String, Class<? extends T>> getAliasMap() {
+    return ImmutableMap.copyOf(this.aliasToClassCache);
+  }
+
+  public List<Alias> getAliasObjects() {
+    return ImmutableList.copyOf(this.aliasObjects);
   }
 }

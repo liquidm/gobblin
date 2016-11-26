@@ -16,6 +16,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Random;
 
 import lombok.extern.slf4j.Slf4j;
@@ -24,6 +25,7 @@ import org.apache.avro.Schema;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.Pair;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
@@ -56,6 +58,7 @@ import gobblin.data.management.conversion.hive.query.HiveAvroORCQueryGenerator;
 import gobblin.data.management.copy.hive.HiveDatasetFinder;
 import gobblin.data.management.copy.hive.HiveUtils;
 import gobblin.hive.HiveMetastoreClientPool;
+import gobblin.metrics.event.sla.SlaEventKeys;
 import gobblin.util.AutoReturnableObject;
 import gobblin.util.HadoopUtils;
 
@@ -74,6 +77,19 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
    * Subdirectory within destination ORC table directory to publish data
    */
   private static final String PUBLISHED_TABLE_SUBDIRECTORY = "final";
+
+  /**
+   * Hive runtime property key names for tracking
+   */
+  private static final String GOBBLIN_DATASET_URN_KEY = "gobblin.datasetUrn";
+  private static final String GOBBLIN_PARTITION_NAME_KEY = "gobblin.partitionName";
+  private static final String GOBBLIN_WORKUNIT_CREATE_TIME_KEY = "gobblin.workunitCreateTime";
+
+  /***
+   * Separators used by Hive
+   */
+  private static final String HIVE_PARTITIONS_INFO = "/";
+  private static final String HIVE_PARTITIONS_TYPE = ":";
 
   protected final FileSystem fs;
 
@@ -176,12 +192,19 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
     Optional<Table> destinationTableMeta = destinationMeta.getLeft();
 
     // Optional
+    // wrapperViewName          : If specified view with 'wrapperViewName' is created if not already exists
+    //                            over destination table
+    // isUpdateViewAlwaysEnabled: If false 'wrapperViewName' is only updated when schema evolves; if true
+    //                            'wrapperViewName' is always updated (everytime publish happens)
+    Optional<String> wrapperViewName = getConversionConfig().getDestinationViewName();
+    boolean shouldUpdateView = getConversionConfig().isUpdateViewAlwaysEnabled();
     Optional<List<String>> clusterBy =
         getConversionConfig().getClusterBy().isEmpty()
             ? Optional.<List<String>> absent()
             : Optional.of(getConversionConfig().getClusterBy());
     Optional<Integer> numBuckets = getConversionConfig().getNumBuckets();
     Optional<Integer> rowLimit = getConversionConfig().getRowLimit();
+    Properties tableProperties = getConversionConfig().getDestinationTableProperties();
 
     // Partition dir hint helps create different directory for hourly and daily partition with same timestamp, such as:
     // .. daily_2016-01-01-00 and hourly_2016-01-01-00
@@ -206,24 +229,37 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
      * Upon testing, this did not work
      */
     try {
-      FsPermission sourceDataPermission =
-          this.fs.getFileStatus(conversionEntity.getHiveTable().getDataLocation()).getPermission();
+      FileStatus sourceDataFileStatus = this.fs.getFileStatus(conversionEntity.getHiveTable().getDataLocation());
+      FsPermission sourceDataPermission = sourceDataFileStatus.getPermission();
       if (!this.fs.mkdirs(new Path(getConversionConfig().getDestinationDataPath()), sourceDataPermission)) {
         throw new RuntimeException(String.format("Failed to create path %s with permissions %s", new Path(
             getConversionConfig().getDestinationDataPath()), sourceDataPermission));
       } else {
         this.fs.setPermission(new Path(getConversionConfig().getDestinationDataPath()), sourceDataPermission);
-        log.info(String.format("Created %s with permissions %s", new Path(getConversionConfig()
-            .getDestinationDataPath()), sourceDataPermission));
+        // Set the same group as source
+        this.fs.setOwner(new Path(getConversionConfig().getDestinationDataPath()), null,
+            sourceDataFileStatus.getGroup());
+        log.info(String.format("Created %s with permissions %s and group %s", new Path(getConversionConfig()
+            .getDestinationDataPath()), sourceDataPermission, sourceDataFileStatus.getGroup()));
       }
     } catch (IOException e) {
       Throwables.propagate(e);
     }
 
-    // Set hive runtime properties
+    // Set hive runtime properties from conversion config
     for (Map.Entry<Object, Object> entry : getConversionConfig().getHiveRuntimeProperties().entrySet()) {
       conversionEntity.getQueries().add(String.format("SET %s=%s", entry.getKey(), entry.getValue()));
     }
+    // Set hive runtime properties for tracking
+    conversionEntity.getQueries().add(String.format("SET %s=%s", GOBBLIN_DATASET_URN_KEY,
+        conversionEntity.getHiveTable().getCompleteName()));
+    if (conversionEntity.getHivePartition().isPresent()) {
+      conversionEntity.getQueries().add(String.format("SET %s=%s", GOBBLIN_PARTITION_NAME_KEY,
+          conversionEntity.getHivePartition().get().getCompleteName()));
+    }
+    conversionEntity.getQueries().add(String
+        .format("SET %s=%s", GOBBLIN_WORKUNIT_CREATE_TIME_KEY,
+            workUnit.getWorkunit().getProp(SlaEventKeys.ORIGIN_TS_IN_MILLI_SECS_KEY)));
 
     // Create DDL statement for table
     Map<String, String> hiveColumns = new HashMap<>();
@@ -239,12 +275,12 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
             Optional.<String>absent(),
             Optional.<String>absent(),
             Optional.<String>absent(),
-            Optional.<Map<String, String>>absent(),
+            tableProperties,
             isEvolutionEnabled,
             destinationTableMeta,
             hiveColumns);
     conversionEntity.getQueries().add(createStagingTableDDL);
-    log.info("Create staging table DDL: " + createStagingTableDDL);
+    log.debug("Create staging table DDL: " + createStagingTableDDL);
 
     // Create DDL statement for partition
     String orcStagingDataPartitionDirName = getOrcStagingDataPartitionDirName(conversionEntity, sourceDataPathIdentifier);
@@ -257,7 +293,7 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
               partitionsDMLInfo);
 
       conversionEntity.getQueries().addAll(createStagingPartitionDDL);
-      log.info("Create staging partition DDL: " + createStagingPartitionDDL);
+      log.debug("Create staging partition DDL: " + createStagingPartitionDDL);
     }
 
     // Create DML statement
@@ -276,7 +312,7 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
                 destinationTableMeta,
                 rowLimit);
     conversionEntity.getQueries().add(insertInORCStagingTableDML);
-    log.info("Conversion staging DML: " + insertInORCStagingTableDML);
+    log.debug("Conversion staging DML: " + insertInORCStagingTableDML);
 
     // TODO: Split this method into two (conversion and publish)
     // Addition to WUS for Staging publish:
@@ -329,12 +365,12 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
               Optional.<String>absent(),
               Optional.<String>absent(),
               Optional.<String>absent(),
-              Optional.<Map<String, String>>absent(),
+              tableProperties,
               isEvolutionEnabled,
               destinationTableMeta,
               new HashMap<String, String>());
       publishQueries.add(createTargetTableDDL);
-      log.info("Create final table DDL: " + createTargetTableDDL);
+      log.debug("Create final table DDL: " + createTargetTableDDL);
     }
 
     // Step:
@@ -348,8 +384,11 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
         isEvolutionEnabled,
         hiveColumns,
         destinationTableMeta);
-    log.info("Evolve final table DDLs: " + evolutionDDLs);
+    log.debug("Evolve final table DDLs: " + evolutionDDLs);
     EventWorkunitUtils.setEvolutionMetadata(workUnit, evolutionDDLs);
+
+    // View (if present) must be updated if evolution happens
+    shouldUpdateView |= evolutionDDLs.size() > 0;
 
     publishQueries.addAll(evolutionDDLs);
 
@@ -368,7 +407,7 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
       // A.2.2.3, B.2.2.3: Drop this staging table and delete directories
       String dropStagingTableDDL = HiveAvroORCQueryGenerator.generateDropTableDDL(orcTableDatabase, orcStagingTableName);
 
-      log.info("Drop staging table DDL: " + dropStagingTableDDL);
+      log.debug("Drop staging table DDL: " + dropStagingTableDDL);
       cleanupQueries.add(dropStagingTableDDL);
 
       // Delete: orcStagingDataLocation
@@ -385,7 +424,7 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
           HiveAvroORCQueryGenerator.generateDropPartitionsDDL(orcTableDatabase,
               orcTableName,
               partitionsDMLInfo);
-      log.info("Drop partitions if exist in final table: " + dropPartitionsDDL);
+      log.debug("Drop partitions if exist in final table: " + dropPartitionsDDL);
       publishQueries.addAll(dropPartitionsDDL);
 
       // Step:
@@ -404,14 +443,14 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
               orcDataPartitionLocation,
               partitionsDMLInfo);
 
-      log.info("Create final partition DDL: " + createFinalPartitionDDL);
+      log.debug("Create final partition DDL: " + createFinalPartitionDDL);
       publishQueries.addAll(createFinalPartitionDDL);
 
       // Step:
       // A.2.3.4, B.2.3.4: Drop this staging table and delete directories
       String dropStagingTableDDL = HiveAvroORCQueryGenerator.generateDropTableDDL(orcTableDatabase, orcStagingTableName);
 
-      log.info("Drop staging table DDL: " + dropStagingTableDDL);
+      log.debug("Drop staging table DDL: " + dropStagingTableDDL);
       cleanupQueries.add(dropStagingTableDDL);
 
       // Delete: orcStagingDataLocation
@@ -428,8 +467,20 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
         orcTableName,
         getDropPartitionsDDLInfo(conversionEntity)));
 
+    /*
+     * Create or update view over the ORC table if specified in the config (ie. wrapper view name is present in config)
+     */
+    if (wrapperViewName.isPresent()) {
+      String viewName = wrapperViewName.get();
+      List<String> createOrUpdateViewDDLs = HiveAvroORCQueryGenerator.generateCreateOrUpdateViewDDL(orcTableDatabase,
+          orcTableName, orcTableDatabase, viewName, shouldUpdateView);
+      log.debug("Create or update View DDLs: " + createOrUpdateViewDDLs);
+      publishQueries.addAll(createOrUpdateViewDDLs);
+
+    }
+
     HiveAvroORCQueryGenerator.serializePublishCommands(workUnit, publishEntity);
-    log.info("Publish partition entity: " + publishEntity);
+    log.debug("Publish partition entity: " + publishEntity);
 
 
     log.debug("Conversion Query " + conversionEntity.getQueries());
@@ -557,8 +608,11 @@ public abstract class AbstractAvroToOrcConverter extends Converter<Schema, Schem
       if (StringUtils.isBlank(partitionsInfoString) || StringUtils.isBlank(partitionsTypeString)) {
         throw new IllegalArgumentException("Both partitions info and partitions must be present, if one is specified");
       }
-      List<String> pInfo = Splitter.on(",").omitEmptyStrings().trimResults().splitToList(partitionsInfoString);
-      List<String> pType = Splitter.on(",").omitEmptyStrings().trimResults().splitToList(partitionsTypeString);
+      List<String> pInfo = Splitter.on(HIVE_PARTITIONS_INFO).omitEmptyStrings().trimResults().splitToList(partitionsInfoString);
+      List<String> pType = Splitter.on(HIVE_PARTITIONS_TYPE).omitEmptyStrings().trimResults().splitToList(partitionsTypeString);
+      log.debug("PartitionsInfoString: " + partitionsInfoString);
+      log.debug("PartitionsTypeString: " + partitionsTypeString);
+
       if (pInfo.size() != pType.size()) {
         throw new IllegalArgumentException("partitions info and partitions type list should of same size");
       }

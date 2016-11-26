@@ -12,8 +12,11 @@
 
 package gobblin.util;
 
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 
 import org.testng.Assert;
 import org.testng.annotations.Test;
@@ -26,6 +29,8 @@ import com.typesafe.config.Config;
 import com.typesafe.config.ConfigFactory;
 import com.typesafe.config.ConfigValueFactory;
 
+import gobblin.configuration.State;
+
 
 public class ConfigUtilsTest {
 
@@ -36,11 +41,17 @@ public class ConfigUtilsTest {
     properties.setProperty("k1.kk1", "v1");
     properties.setProperty("k1.kk2", "v2");
     properties.setProperty("k2.kk", "v3");
+    properties.setProperty("k3", "v4");
+    properties.setProperty("k3.kk1", "v5");
+    properties.setProperty("k3.kk1.kkk1", "v6");
 
     Config conf = ConfigUtils.propertiesToConfig(properties);
     Assert.assertEquals(conf.getString("k1.kk1"), "v1");
     Assert.assertEquals(conf.getString("k1.kk2"), "v2");
     Assert.assertEquals(conf.getString("k2.kk"), "v3");
+    Assert.assertEquals(conf.getString(ConfigUtils.sanitizeFullPrefixKey("k3")), "v4");
+    Assert.assertEquals(conf.getString(ConfigUtils.sanitizeFullPrefixKey("k3.kk1")), "v5");
+    Assert.assertEquals(conf.getString("k3.kk1.kkk1"), "v6");
 
   }
 
@@ -69,14 +80,35 @@ public class ConfigUtilsTest {
   @Test
   public void testGetStringList() throws Exception {
 
-    // Comma separated
-    Assert.assertEquals(ConfigUtils.getStringList(ConfigFactory.parseMap(ImmutableMap.of("key1", "value1,value2")), "key1"),
-        ImmutableList.of("value1", "value2"));
+    // values as comma separated strings
+    Assert.assertEquals(ConfigUtils.getStringList(ConfigFactory.parseMap(ImmutableMap.of("a.b", "1,2,3")), "a.b"),
+        ImmutableList.of("1", "2", "3"));
 
-    // Type safe list
-    Assert.assertEquals(
-        ConfigUtils.getStringList(ConfigFactory.empty().withValue("key1", ConfigValueFactory.fromIterable(ImmutableList.of("value1", "value2"))), "key1"),
-        ImmutableList.of("value1", "value2"));
+    // values as quoted comma separated strings
+    Assert.assertEquals(ConfigUtils.getStringList(ConfigFactory.parseMap(ImmutableMap.of("a.b", "\"1\",\"2\",\"3\"")), "a.b"),
+        ImmutableList.of("1", "2", "3"));
+
+    // values as quoted comma separated strings (Multiple values)
+    Assert.assertEquals(ConfigUtils.getStringList(ConfigFactory.parseMap(ImmutableMap.of("a.b", "\"1\",\"2,3\"")), "a.b"),
+        ImmutableList.of("1", "2,3"));
+
+    // values as Type safe list
+    Assert.assertEquals(ConfigUtils.getStringList(
+            ConfigFactory.empty().withValue("a.b",
+                ConfigValueFactory.fromIterable(ImmutableList.of("1", "2","3"))), "a.b"),
+        ImmutableList.of("1", "2", "3"));
+
+    // values as quoted Type safe list
+    Assert.assertEquals(ConfigUtils.getStringList(
+            ConfigFactory.empty().withValue("a.b",
+                ConfigValueFactory.fromIterable(ImmutableList.of("\"1\"", "\"2\"","\"3\""))), "a.b"),
+        ImmutableList.of("1", "2", "3"));
+
+    // values as quoted Type safe list (Multiple values)
+    Assert.assertEquals(ConfigUtils.getStringList(
+            ConfigFactory.empty().withValue("a.b",
+                ConfigValueFactory.fromIterable(ImmutableList.of("\"1\"", "\"2,3\""))), "a.b"),
+        ImmutableList.of("1", "2,3"));
 
     // Empty list if path does not exist
     Assert.assertEquals(ConfigUtils.getStringList(ConfigFactory.parseMap(ImmutableMap.of("key1", "value1,value2")), "key2"), ImmutableList.of());
@@ -85,6 +117,87 @@ public class ConfigUtilsTest {
     Map<String,String> configMap = Maps.newHashMap();
     configMap.put("key1", null);
     Assert.assertEquals(ConfigUtils.getStringList(ConfigFactory.parseMap(configMap), "key1"), ImmutableList.of());
+  }
 
+  @Test
+  public void testConfigToProperties() {
+    Config cfg = ConfigFactory.parseMap(ImmutableMap.<String, Object>builder()
+        .put("key1", 1)
+        .put("key2", "sTring")
+        .put("key3", true)
+        .build());
+
+    Properties props = ConfigUtils.configToProperties(cfg);
+    Assert.assertEquals(props.getProperty("key1"), "1");
+    Assert.assertEquals(props.getProperty("key2"), "sTring");
+    Assert.assertEquals(props.getProperty("key3"), "true");
+  }
+
+  @Test
+  public void testPropertiesToConfigToState() {
+
+    Properties properties = new Properties();
+    properties.setProperty("k1.kk1", "v1");
+    properties.setProperty("k1.kk2", "v2");
+    properties.setProperty("k2.kk", "v3");
+    properties.setProperty("k3", "v4");
+    properties.setProperty("k3.kk1", "v5");
+    properties.setProperty("k3.kk1.kkk1", "v6");
+
+    Config conf = ConfigUtils.propertiesToConfig(properties);
+    State state = ConfigUtils.configToState(conf);
+    Assert.assertEquals(state.getProp("k1.kk1"), "v1");
+    Assert.assertEquals(state.getProp("k1.kk2"), "v2");
+    Assert.assertEquals(state.getProp("k2.kk"), "v3");
+    Assert.assertEquals(state.getProp("k3"), "v4");
+    Assert.assertEquals(state.getProp("k3.kk1"), "v5");
+    Assert.assertEquals(state.getProp("k3.kk1.kkk1"), "v6");
+  }
+
+  @Test
+  public void testConfigToPropertiesWithPrefix() {
+    Config cfg = ConfigFactory.parseMap(ImmutableMap.<String, Object>builder()
+        .put("a.key1", 1)
+        .put("b.key2", "sTring")
+        .put("a.key3", true)
+        .build());
+
+    Properties props = ConfigUtils.configToProperties(cfg, "a.");
+    Assert.assertEquals(props.getProperty("a.key1"), "1");
+    Assert.assertNull(props.getProperty("b.key2"));
+    Assert.assertEquals(props.getProperty("a.key3"), "true");
+  }
+
+  @Test
+  public void testFindFullPrefixKeys() {
+    Properties props = new Properties();
+    props.setProperty("a.b", "123");
+    props.setProperty("a.b1", "123");
+    props.setProperty("b", "123");
+    props.setProperty("b_a", "123");
+    props.setProperty("a.b.c", "123");
+    props.setProperty("a.b.c.d.e", "123");
+    props.setProperty("b.a", "123");
+
+    Set<String> fullPrefixKeys =
+        ConfigUtils.findFullPrefixKeys(props, Optional.<String>absent());
+    Assert.assertEquals(fullPrefixKeys, new HashSet<>(Arrays.asList("a.b", "a.b.c", "b")));
+
+    fullPrefixKeys =
+        ConfigUtils.findFullPrefixKeys(props, Optional.of("a."));
+    Assert.assertEquals(fullPrefixKeys, new HashSet<>(Arrays.asList("a.b", "a.b.c")));
+
+    fullPrefixKeys =
+        ConfigUtils.findFullPrefixKeys(props, Optional.of("c."));
+    Assert.assertTrue(fullPrefixKeys.isEmpty());
+
+    props = new Properties();
+    props.setProperty("a.b", "123");
+    props.setProperty("a.b1", "123");
+    props.setProperty("b", "123");
+    props.setProperty("b_a", "123");
+    fullPrefixKeys =
+        ConfigUtils.findFullPrefixKeys(props, Optional.<String>absent());
+    Assert.assertTrue(fullPrefixKeys.isEmpty());
   }
 }
