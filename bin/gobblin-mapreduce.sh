@@ -142,12 +142,12 @@ LIBJARS=(
   $FWDIR_LIB/data-2.6.0.jar
   $FWDIR_LIB/gson-2.6.2.jar
   $FWDIR_LIB/joda-time-2.9.3.jar
-  $FWDIR_LIB/kafka_2.11-0.10.0.1.jar
-  $FWDIR_LIB/kafka-clients-0.10.0.1.jar
+  $FWDIR_LIB/kafka_2.11-1.1.0.jar
+  $FWDIR_LIB/kafka-clients-1.1.0.jar
   $FWDIR_LIB/metrics-core-2.2.0.jar
   $FWDIR_LIB/metrics-core-3.1.0.jar
   $FWDIR_LIB/metrics-graphite-3.1.0.jar
-  $FWDIR_LIB/scala-library-2.11.8.jar
+  $FWDIR_LIB/scala-library-2.11.12.jar
   $FWDIR_LIB/influxdb-java-2.1.jar
   $FWDIR_LIB/okhttp-2.4.0.jar
   $FWDIR_LIB/okio-1.4.0.jar
