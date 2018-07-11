@@ -151,6 +151,8 @@ LIBJARS=(
   $FWDIR_LIB/scala-logging_2.11-3.7.2.jar
   $FWDIR_LIB/lz4-java-1.4.jar
   $FWDIR_LIB/snappy-java-1.1.7.1.jar
+  $FWDIR_LIB/slf4j-api-1.7.25.jar
+  $FWDIR_LIB/slf4j-log4j12-1.7.25.jar
 )
 LIBJARS=$(join , "${LIBJARS[@]}")
 
