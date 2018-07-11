@@ -148,6 +148,7 @@ LIBJARS=(
   $FWDIR_LIB/metrics-core-3.1.0.jar
   $FWDIR_LIB/metrics-graphite-3.1.0.jar
   $FWDIR_LIB/scala-library-2.11.12.jar
+  $FWDIR_LIB/scala-logging_2.11-3.7.2.jar
   $FWDIR_LIB/lz4-java-1.4.jar
   $FWDIR_LIB/snappy-java-1.1.7.1.jar
 )
